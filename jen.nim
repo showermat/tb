@@ -8,7 +8,6 @@ import util
 # TODO
 # Search
 # Switch to ncurses to allow feature detection
-# Use macros to avoid code duplication in char trie
 # Strings too large to fit on one screen -- we need to not anchor only to the top or bottom of the node
 # Control chars in keys and very long keys
 # Editing -- start with 'e' to open in external editor

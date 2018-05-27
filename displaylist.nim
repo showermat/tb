@@ -1,4 +1,3 @@
-
 import json
 import tables
 import util
@@ -290,7 +289,6 @@ proc scroll(l: DisplayList, by: int) =
 
 proc select(l: DisplayList, newSel: ListNode, down: bool) =
     if newSel == nil or newSel == l.sel: return
-    let oldOff = l.offset
     let oldLines = l.selLines
     let curPos = if l.down: 0 else: l.sel.formatted.len - 1
     if down: l.offset += lpos(l.sel, curPos).distanceFwd(lpos(newSel, 0))
@@ -309,51 +307,50 @@ proc interactive*(l: DisplayList) =
     l.tty.scr_init()
     l.tty.scr_save()
     defer: l.tty.scr_restore()
-    let keys = newTrie(@[" ", "w", "\x0c", "j", "k", "J", "K", "p", "g", "G", "H", "M", "L", "\x05", "\x19", "\x06", "\x02", "\x04", "\x15", "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "\x1b[5~", "\x1b[6~", "\x1b[1~", "\x1b[4~", "q", "\x03"])
     l.drawLines(0, l.height)
     var events = newSelector[int]()
     let infd = l.tty.getFileHandle.int
     events.registerHandle(infd, {Read}, 0)
     let winchfd = events.registerSignal(28, 0)
     let termfd = events.registerSignal(15, 0)
-    while true:
+    var done = false
+    let keys = newTrie()
+    keys.on(" "):
+        var maxEnd: int
+        if l.sel.expanded: maxEnd = lpos(l.sel, 0).distanceFwd(lpos(nil, 0))
+        l.sel.toggle(l.width)
+        if l.sel.expanded: maxEnd = lpos(l.sel, 0).distanceFwd(lpos(nil, 0))
+        l.drawLines(l.offset, min(l.height, l.offset + maxEnd))
+    keys.on("w"):
+        l.sel.recursiveExpand(l.width)
+        l.drawLines(l.offset, min(l.height, l.offset + lpos(l.sel, 0).distanceFwd(lpos(nil, 0))))
+    #keys.on("\x0D"): l.sel.edit # ^M
+    keys.on("\x0c"): l.drawLines(0, l.height) # ^L
+    keys.on("j"): l.select(l.sel.next, true)
+    keys.on("k"): l.select(l.sel.prev, false)
+    keys.on("J"): l.select(l.sel.nextsib, true)
+    keys.on("K"): l.select(l.sel.prevsib, false)
+    keys.on("p"): l.select(l.sel.parent, false)
+    keys.on("g"): l.select(l.root, false)
+    keys.on("G"): l.select(l.last, true)
+    keys.on("H"): l.selpos(0)
+    keys.on("M"): l.selpos(l.height div 2)
+    keys.on("L"): l.selpos(l.height - 1)
+    keys.on("\x05"): l.scroll(1) # ^E
+    keys.on("\x19"): l.scroll(-1) # ^Y
+    keys.on("\x06"): l.scroll(l.height) # ^F
+    keys.on("\x02"): l.scroll(-l.height) # ^B
+    keys.on("\x04"): l.scroll(l.height div 2) # ^D
+    keys.on("\x15"): l.scroll(-l.height div 2) # ^U
+    keys.on("\x1b[A"): l.select(l.sel.prev, false) # Up
+    keys.on("\x1b[B"): l.select(l.sel.next, true) # Down
+    keys.on("\x1b[5~"): l.scroll(-l.height) # PgUp
+    keys.on("\x1b[6~"): l.scroll(l.height) # PgDn
+    keys.on("\x1b[1~"): l.select(l.root, false) # Home
+    keys.on("\x1b[4~"): l.select(l.last, true) # End
+    keys.on("q", "\x03"): done = true
+    while not done:
         for event in events.select(-1):
             if event.fd == winchfd: l.resize
-            if event.fd == termfd: return
-            elif event.fd == infd:
-                case keys.readchars(l.tty)
-                of " ":
-                    var maxEnd: int
-                    if l.sel.expanded: maxEnd = lpos(l.sel, 0).distanceFwd(lpos(nil, 0))
-                    l.sel.toggle(l.width)
-                    if l.sel.expanded: maxEnd = lpos(l.sel, 0).distanceFwd(lpos(nil, 0))
-                    l.drawLines(l.offset, min(l.height, l.offset + maxEnd))
-                of "w":
-                    l.sel.recursiveExpand(l.width)
-                    l.drawLines(l.offset, min(l.height, l.offset + lpos(l.sel, 0).distanceFwd(lpos(nil, 0))))
-                #of "\x0D": l.sel.edit # ^M
-                of "\x0c": l.drawLines(0, l.height) # ^L
-                of "j": l.select(l.sel.next, true)
-                of "k": l.select(l.sel.prev, false)
-                of "J": l.select(l.sel.nextsib, true)
-                of "K": l.select(l.sel.prevsib, false)
-                of "p": l.select(l.sel.parent, false)
-                of "g": l.select(l.root, false)
-                of "G": l.select(l.last, true)
-                of "H": l.selpos(0)
-                of "M": l.selpos(l.height div 2)
-                of "L": l.selpos(l.height - 1)
-                of "\x05": l.scroll(1) # ^E
-                of "\x19": l.scroll(-1) # ^Y
-                of "\x06": l.scroll(l.height) # ^F
-                of "\x02": l.scroll(-l.height) # ^B
-                of "\x04": l.scroll(l.height div 2) # ^D
-                of "\x15": l.scroll(-l.height div 2) # ^U
-                of "\x1b[A": l.select(l.sel.prev, false) # Up
-                of "\x1b[B": l.select(l.sel.next, true) # Down
-                of "\x1b[5~": l.scroll(-l.height) # PgUp
-                of "\x1b[6~": l.scroll(l.height) # PgDn
-                of "\x1b[1~": l.select(l.root, false) # Home
-                of "\x1b[4~": l.select(l.last, true) # End
-                of "q", "\x03": return
-                else: discard
+            elif event.fd == termfd: done = true
+            elif event.fd == infd: keys.wait(l.tty)
