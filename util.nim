@@ -1,6 +1,10 @@
-# Originally from https://gist.github.com/def-/58c3374c23f120e31872https://gist.github.com/def-/58c3374c23f120e31872
+import strutils
+import unicode
+import osproc
+import selectors
+import posix, os # Required for selectors
 
-let ncolor = 256 # FIXME Setting this properly will probably require switching entirely to real ncurses
+var ncolor* = 8
 
 type termios {.header: "<termios.h>", importc: "struct termios".} = object # Do we really need to duplicate the object structure here?  So much for portability.
     c_iflag: cuint
@@ -18,10 +22,10 @@ type winsize {.header: "<termios.h>", importc: "struct winsize".} = object
     ws_xpixel: cushort
     ws_ypixel: cushort
 
-type ColorSet* = object
-    c256: int
-    c8: int
-    bg: bool
+type ColorSpec* = ref object
+    c256*: int
+    c8*: int
+    bg*: bool
 
 var TCSANOW {.header: "<termios.h>", importc: "TCSANOW".}: cint
 
@@ -43,24 +47,24 @@ proc getc(stream: File): char {.header: "<stdio.h>", importc: "getc".}
 
 proc setlocale(category: cint, locale: cstring) {.header: "<locale.h>", importc: "setlocale".}
 
-proc wcwidth*(c: int32): cint {.header: "<wchar.h>", importc: "wcwidth".}
+proc wcwidthInner(c: int32): cint {.header: "<wchar.h>", importc: "wcwidth".}
 
-proc newColorSet*(c256: int, c8: int, bg: bool): ColorSet =
-    return ColorSet(c256: c256, c8: c8, bg: bg)
+proc wcwidth*(c: Rune): cint = wcwidthInner(c.int32)
 
-proc startColor*(color: ColorSet):  string =
+proc newColorSpec*(c256: int, c8: int, bg: bool): ColorSpec =
+    return ColorSpec(c256: c256, c8: c8, bg: bg)
+
+proc startColor*(color: ColorSpec):  string =
     let prefix = if color.bg: "4" else: "3"
     if ncolor < 256: return "\e[" & prefix & $color.c8 & "m"
     else: return "\e[" & prefix & "8;5;" & $color.c256 & "m"
 
-const endFg* = "\e[39m"
+const
+    endFg* = "\e[39m"
+    endBg* = "\e[49m"
 
-const endBg* = "\e[49m"
-
-proc color*(color: ColorSet, s: string):  string =
+proc colorPrint*(color: ColorSpec, s: string):  string =
     return startColor(color) & s & (if color.bg: endBg else: endFg)
-
-proc style*(style: int, s: string): string = return "\e[" & $style & "m" & s & "\e[0m"
 
 proc clearscr*(f: File) = f.write("\e[H\e[2J")
 
@@ -69,17 +73,24 @@ proc scr_init*(f: File) =
     tcgetattr(f.getFileHandle.cint, addr ios_default)
     ios_raw = ios_default
     cfmakeraw(addr ios_raw)
+    let (ret, err) = execCmdEx("tput colors") # FIXME This is really not the best solution and we should just be using ncurses.
+    if err == 0: ncolor = ret.strip.parseInt
 
 proc scr_save*(f: File) =
-    f.write("\e[?1049h\e[?25l")
+    f.write("\e[?1049h\e[?25l\e[?1000h\e[?1006h")
     f.clearscr()
     tcsetattr(f.getFileHandle.cint, TCSANOW, addr ios_raw)
 
 proc scr_restore*(f: File) =
-    f.write("\e[?1049l\e[?25h")
+    f.write("\e[?1049l\e[?25h\e[?1000l\e[?1006l")
     tcsetattr(f.getFileHandle.cint, TCSANOW, addr ios_default)
 
-proc readchar(f: File): char = return getc(f)
+proc readchar(f: File, timeout: float = 0.0): char =
+    if timeout == 0.0: return getc(f)
+    let sel = newSelector[int]()
+    sel.registerHandle(f.getFileHandle.int, {Read}, 0)
+    if sel.select((timeout * 1000).int).len > 0: return getc(f)
+    else: return '\0' # TODO Better sentinel
 
 proc scrsize*(f: File): tuple[h: int, w: int] =
     var w: winsize
@@ -87,5 +98,24 @@ proc scrsize*(f: File): tuple[h: int, w: int] =
     return (int(w.ws_row), int(w.ws_col))
 
 proc debugmsg*(f: File, msg: string) =
-    f.write("\e[H\e[2K\e[41;37m" & msg & "\e[m")
+    f.write("\e[H\e[41;37m" & msg & "\e[m  ")
     discard f.readchar()
+
+proc ctlseq*(f: File): (char, seq[int]) =
+    proc int0(s: string): int =
+        if s == "": 0 else: s.parseInt
+    if f.readchar(0.1) != '[': return ('\0', @[])
+    var parts: seq[int] = @[]
+    var buf = ""
+    while true:
+        let c = f.readchar()
+        case c
+        of ';':
+            parts &= buf.int0
+            buf = ""
+        of '0'..'9':
+            buf &= c
+        of '<': discard # FIXME
+        else:
+            parts &= buf.int0
+            return (c, parts)
