@@ -3,6 +3,8 @@ import tables
 import strutils
 import util
 
+const tabwidth = 4
+
 type
     FmtCmdType = enum
         fmtContain,
@@ -66,8 +68,7 @@ type Preformatted* = ref object
     mapping: Table[(int, int), (int, int)]
 
 proc initPreformatted(width: int): Preformatted =
-    let mapping = initTable[(int, int), (int, int)]()
-    return Preformatted(width: width, value: @[], raw: @[""], mapping: mapping)
+    return Preformatted(width: width, value: @[], raw: @[""], mapping: initTable[(int, int), (int, int)]())
 
 proc append(target: var seq[string], value: seq[string]) =
     if value.len == 0: return
@@ -119,7 +120,7 @@ proc internalFormat(output: Preformatted, value: FmtCmd, startcol: int, style: S
             of 9: # \t
                 if output.width > 0 and cnt >= output.width - 4: newline()
                 cur &= "    " # TODO What if width < 4?
-                cnt += 4
+                cnt += tabwidth
                 needMapping = true
             else:
                 let cw = max(c.wcwidth, 0)
@@ -129,10 +130,16 @@ proc internalFormat(output: Preformatted, value: FmtCmd, startcol: int, style: S
             if record:
                 output.raw[^1] &= c.toUTF8
                 if needMapping and cnt > 0:
-                    let target =
-                        if output.value.len > 0: (output.value.len - 1, output.value[^1].runeLen + cur.runeLen - 1)
-                        else: (0, cur.runeLen - 1)
-                    output.mapping[(output.raw.len - 1, output.raw[^1].runeLen - 1)] = target
+                    proc addMapping(charlen: int, offset: int) =
+                        let target =
+                            if output.value.len > 0: (output.value.len - 1, output.value[^1].runeLen + cur.runeLen - charlen)
+                            else: (0, cur.runeLen - charlen)
+                        output.mapping[(output.raw.len - 1, output.raw[^1].runeLen - offset)] = target
+                    if c.int32 == 9:
+                        addMapping(tabwidth, 1)
+                        addMapping(0, 0) # Only necessary for tabs at end of line
+                    else:
+                        addMapping(1, 1)
                     needMapping = false
         output.value.append(@[cur & style.stop])
         return cnt
@@ -142,6 +149,7 @@ proc internalFormat(output: Preformatted, value: FmtCmd, startcol: int, style: S
 
 proc format*(value: FmtCmd, width: int): Preformatted =
     var ret = initPreformatted(width)
+    assert width > 0 # Ensured by caller in ListNode
     discard internalFormat(ret, value, 0, StyleSet(fg: nil, bg: nil), true)
     return ret
 
@@ -175,7 +183,7 @@ proc translate*(p: Preformatted, chunk: int, idx: int): (int, int) =
     let target = p.mapping[(chunk, prev)]
     return (target[0], target[1] + delta)
 
-proc search*(p: Preformatted, q: string): seq[((int, int), (int, int))] = # TODO Possible to optimize for single-line searching?
+proc search*(p: Preformatted, q: string): seq[((int, int), (int, int))] =
     proc findall(s: string, q: string): seq[int] =
         var ret: seq[int] = @[]
         var cur = 0

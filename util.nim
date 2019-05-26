@@ -74,7 +74,7 @@ proc scr_init*(f: File) =
     ios_raw = ios_default
     cfmakeraw(addr ios_raw)
     let (ret, err) = execCmdEx("tput colors") # FIXME This is really not the best solution and we should just be using ncurses.
-    if err == 0: ncolor = ret.strip.parseInt
+    if err == 0: ncolor = unicode.strip(ret).parseInt
 
 proc scr_save*(f: File) =
     f.write("\e[?1049h\e[?25l\e[?1000h\e[?1006h")

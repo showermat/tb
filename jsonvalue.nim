@@ -20,7 +20,7 @@ type JsonValue* = ref object
 
 proc newJsonRoot*(input: Stream): JsonValue =
     let value = input.parseJson
-    JsonValue(key: nil, value: value, idx: 0, parent: nil, depth: 0)
+    JsonValue(key: "", value: value, idx: 0, parent: nil, depth: 0)
 
 proc fmtstr(s: string): FmtCmd =
     var parts: seq[FmtCmd] = @[]
@@ -39,7 +39,7 @@ proc fmtkey(v: JsonValue): FmtCmd =
     if v.parent == nil: return fcolor(fgMuted, flit("root")) # "•"
     case v.parent.value.kind
     of JObject: return fcolor(fgKey, fmtstr(v.key))
-    of JArray: return fexclude(fcolor(fgMuted,fmtstr(v.key)))
+    of JArray: return fexclude(fcolor(fgMuted, fmtstr(v.key)))
     else: assert(false)
 
 proc fmtval(v: JsonValue): FmtCmd =
@@ -59,6 +59,11 @@ proc content*(v: JsonValue): FmtCmd =
     if v.parent == nil: return v.fmtval
     return fcat(@[v.fmtkey, fexclude(fcolor(fgMuted, flit(": "))), v.fmtval])
 
+proc expandable*(val: JsonValue): bool =
+    case val.value.kind
+    of JObject, JArray: true
+    else: false
+
 proc children*(val: JsonValue): seq[JsonValue] =
     var ret: seq[JsonValue] = @[]
     case val.value.kind
@@ -66,7 +71,7 @@ proc children*(val: JsonValue): seq[JsonValue] =
         for k, v in val.value.fields: ret &= JsonValue(key: k, value: v, idx: ret.len, parent: val, depth: val.depth + 1)
     of JArray:
         for i, v in val.value.elems: ret &= JsonValue(key: $i, value: v, idx: ret.len, parent: val, depth: val.depth + 1)
-    else: return nil
+    else: discard
     return ret
 
 proc index*(v: JsonValue): int =

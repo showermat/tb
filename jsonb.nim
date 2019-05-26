@@ -4,11 +4,10 @@ import jsonvalue
 import displaylist
 
 # TODO
-# Nim 0.19
 # Multiple backends using concepts or manual interfaces
 #     https://nim-lang.org/docs/manual.html#generics-concepts
 #     https://openmymind.net/Interfaces-In-Nim/
-# Editing -- start with "e" or enter to open in external editor
+# Interactive filtering with libjq: https://github.com/stedolan/jq/wiki/C-API:-jq-program-invocation
 
 proc main(args: seq[TaintedString]) =
     let tty = open("/dev/tty", fmReadWrite, 0)
@@ -24,4 +23,6 @@ proc main(args: seq[TaintedString]) =
     else: raise newException(Exception, "Too many arguments")
 
 try: main(commandLineParams())
-except: echo("Error: " & getCurrentExceptionMsg())
+except:
+    echo("Error: " & getCurrentExceptionMsg())
+    when not defined(release): echo(getCurrentException().getStackTrace())

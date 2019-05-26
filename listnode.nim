@@ -1,11 +1,14 @@
 import listformat
 import listvalue
 import jsonvalue
+import math
 import unicode
 import algorithm
 import strutils
 import sets
 import util
+
+const colwidth = 4
 
 type ListNode* = ref object
     prev*, next*: ListNode # Last and next items in the visual display
@@ -15,7 +18,7 @@ type ListNode* = ref object
     expanded*: bool # Whether this node is expanded to show children
     last: bool # Whether this is the last child of its parent
     value: JsonValue # The backing value
-    cache: tuple[placeholder: Preformatted, content: Preformatted]
+    cache: tuple[prefix0: string, prefix1: string, placeholder: Preformatted, content: Preformatted]
     search: tuple[query: string, res: seq[((int, int), (int, int))]]
 
 type ListPos* = object
@@ -28,6 +31,11 @@ proc lpos*(node: ListNode, line: int): ListPos =
 proc depth(n: ListNode): int =
     if n.parent == nil: 0
     else: n.parent.depth + 1
+
+proc lines*(n: ListNode): int =
+    case n.expanded
+    of true: n.cache.placeholder.len
+    of false: n.cache.content.len
 
 proc pathTo(n: ListNode): seq[int] =
     if n.parent == nil: return @[]
@@ -49,22 +57,13 @@ proc ins(after: ListNode, n: ListNode) =
     n.prevsib = n.prev
     if after != n.parent: after.nextsib = n
 
-proc parentPrefix(n: ListNode): string =
-    if n.parent == nil: return ""
-    if n.last: return n.parent.parentPrefix & "    "
-    else: return n.parent.parentPrefix & "│   "
-
-proc prefix(n: ListNode): string =
-    if n.parent == nil: return ""
-    return n.parent.parentPrefix & (if n.last: "└── " else: "├── ")
-
 # The following three functions, while more elegantly written recursively, lead to stack overflows in large lists
 proc distanceFwd*(fro: ListPos, to: ListPos): int =
     var cur = fro
     var ret = 0
     while cur.node != to.node:
         if cur.node == nil: return -1
-        ret += cur.node.cache.content.len - cur.line
+        ret += cur.node.lines - cur.line
         cur = lpos(cur.node.next, 0)
     return ret + to.line - cur.line
 
@@ -72,11 +71,11 @@ proc fwd(fro: ListPos, n: int, unsafe: bool): ListPos =
     if fro.node == nil: return lpos(fro.node, 0)
     var cur = fro
     var remain = n
-    while remain >= cur.node.cache.content.len - cur.line:
+    while remain >= cur.node.lines - cur.line:
         if cur.node.next == nil:
             if unsafe: return lpos(nil, 0)
-            else: return lpos(cur.node, cur.node.cache.content.len - 1)
-        remain -= cur.node.cache.content.len - cur.line
+            else: return lpos(cur.node, cur.node.lines - 1)
+        remain -= cur.node.lines - cur.line
         cur = lpos(cur.node.next, 0)
     return lpos(cur.node, cur.line + remain)
 
@@ -88,7 +87,7 @@ proc bwd(fro: ListPos, n: int, unsafe: bool): ListPos =
             if unsafe: return lpos(nil, 0)
             else: return lpos(cur.node, 0)
         remain -= cur.line + 1
-        cur = lpos(cur.node.prev, cur.node.prev.cache.content.len - 1)
+        cur = lpos(cur.node.prev, cur.node.prev.lines - 1)
     return lpos(cur.node, cur.line - remain)
 
 proc move*(fro: ListPos, n: int, unsafe: bool = false): ListPos =
@@ -96,34 +95,47 @@ proc move*(fro: ListPos, n: int, unsafe: bool = false): ListPos =
     if n > 0: return fro.fwd(n, unsafe)
     return fro
 
-proc reformat*(n: ListNode, screenwidth: int) =
-    n.cache.content = format(n.value.content, screenwidth - n.depth * 4)
-    n.cache.placeholder = format(n.value.placeholder, screenwidth - n.depth * 4)
+proc prefix(n: ListNode, maxdepth: int, firstLine: bool): string =
+    proc parentPrefix(n: ListNode, depth: int): string =
+        if n.parent == nil or depth > maxdepth: return ""
+        if n.last: return n.parent.parentPrefix(depth + 1) & " ".repeat(colwidth)
+        else: return n.parent.parentPrefix(depth + 1) & "│" & " ".repeat(colwidth - 1)
+    proc curPrefix(n: ListNode): string =
+        if n.parent == nil: return ""
+        return n.parent.parentPrefix(1) & (if n.last: "└" & "─".repeat(colwidth - 2) & " " else: "├" & "─".repeat(colwidth - 2) & " ")
+    case firstLine
+    of true: n.curPrefix()
+    of false: n.parentPrefix(0)
 
-proc newListNode(parent: ListNode, val: JsonValue, width: int): ListNode =
-    let ret = ListNode(prev: nil, next: nil, prevsib: nil, nextsib: nil, parent: parent, last: false, children: @[], value: val, cache: (nil, nil), expanded: false, search: (nil, @[]))
+proc reformat*(n: ListNode, screenwidth: int) =
+    let maxdepth = (n.depth - 1) mod ((screenwidth - 1) div colwidth)
+    n.cache.prefix0 = n.prefix(maxdepth, true)
+    n.cache.prefix1 = n.prefix(maxdepth, false)
+    let contentw = screenwidth - ((maxdepth + 1) * colwidth) mod screenwidth
+    n.cache.content = n.value.content.format(contentw)
+    n.cache.placeholder = n.value.placeholder.format(contentw)
+
+proc newListNode(parent: ListNode, val: JsonValue, width: int, last: bool): ListNode =
+    let ret = ListNode(prev: nil, next: nil, prevsib: nil, nextsib: nil, parent: parent, last: last, children: @[], value: val, cache: ("", "", nil, nil), expanded: false, search: ("", @[]))
     ret.reformat(width)
     return ret
 
 proc newRootNode*(val: JsonValue, width: int): ListNode =
-    let ret = newListNode(nil, val, width)
-    ret.last = true
-    return ret
+    return newListNode(nil, val, width, true)
 
 proc expandable*(n: ListNode): bool =
-    n.value.children.len > 0
+    n.value.expandable
 
 proc expand*(n: ListNode, w: int) =
     if n.expanded: return
-    let children = n.value.children
-    if children == nil: return
+    if not n.value.expandable: return
     var cur = n
-    for child in children:
-        let child = newListNode(n, child, w)
+    let lastidx = n.value.children.len - 1
+    for i, child in n.value.children.pairs:
+        let child = newListNode(n, child, w, i == lastidx)
         n.children &= child
         cur.ins(child)
         cur = child
-    if n.children.len > 0: n.children[^1].last = true
     n.expanded = true
 
 proc collapse*(n: ListNode) =
@@ -133,29 +145,23 @@ proc collapse*(n: ListNode) =
     n.children = @[]
     n.expanded = false
 
-proc lines*(n: ListNode): int =
-    n.cache.content.len
-    #case n.expanded # TODO Why is this wrong?
-    #of true: n.cache.placeholder.len
-    #of false: n.cache.content.len
-
 proc toggle*(n: ListNode, w: int) =
     if n.expanded: n.collapse
     else: n.expand(w)
 
 proc recursiveExpand*(n: ListNode, w: int) =
-    if n.value.children == nil: return
+    if not n.expandable: return
     if not n.expanded: n.toggle(w)
     for child in n.children: child.recursiveExpand(w)
 
 proc getLine*(n: ListNode, line: int): (string, string) =
-    let value = case n.expanded
+    let prefix = case line
+    of 0: n.cache.prefix0
+    else: n.cache.prefix1
+    let content = case n.expanded
     of true: n.cache.placeholder[line]
     of false: n.cache.content[line]
-    let prefix = case line
-    of 0: n.prefix()
-    else: n.parentPrefix()
-    return (prefix, value)
+    return (prefix, content)
 
 proc search*(n: ListNode, q: string, line: int): seq[int] =
     let fmt = case n.expanded
@@ -193,7 +199,7 @@ proc isBefore*(a: ListNode, b: ListNode): bool =
         if path1[i] < path2[i]: return true
 
 proc matchLines*(n: ListNode): HashSet[int] =
-    if n.search.query == nil: return initSet[int]()
+    if n.search.query == "": return initSet[int]()
     var ret = initSet[int]()
     for res in n.search.res:
         for i in res[0][0]..res[1][0]: ret.incl(i)
