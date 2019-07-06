@@ -1,53 +1,161 @@
 use ::curses;
+use ::curses::Output;
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::ops::Bound;
+use ::regex::Regex;
 
 const TABWIDTH: usize = 4;
 
-#[derive(Clone, Debug)]
-pub enum Output {
-	Str(String),
-	AttrOn(ncurses::attr_t),
-	AttrOff(ncurses::attr_t),
-	Fg(usize),
-	Bg(usize),
+pub struct Search {
+	query: String,
+	matches: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>>, // line, item, start, end // TODO Consider BTreeMap<(usize, usize), BTreeSet<(usize, usize)>> or similar
+}
+
+impl Search {
+	pub fn matchlines(&self) -> Vec<usize> {
+		self.matches.iter().map(|(k, _)| *k).collect::<Vec<usize>>()
+	}
+	pub fn query(&self) -> String {
+		self.query.clone()
+	}
 }
 
 pub struct Preformatted {
 	width: usize,
 	content: Vec<Vec<Output>>,
 	raw: Vec<String>,
-	//mapping: 
+	mapping: BTreeMap<(usize, usize), (usize, usize, usize)>,
 }
 
 impl Preformatted {
 	pub fn new(width: usize) -> Self {
-		Preformatted { width: width, content: vec![], raw: vec!["".to_string()] }
+		Preformatted { width: width, content: vec![], raw: vec!["".to_string()], mapping: BTreeMap::new() }
 	}
 	pub fn len(&self) -> usize {
 		self.content.len()
 	}
-	pub fn write(&self, line: usize, p: &curses::Palette, prefix: Vec<Output>) {
+	pub fn write(&self, line: usize, p: &curses::Palette, prefix: Vec<Output>, bg: usize, search: &Option<Search>) {
+		// TODO With the way this and `highlight` are implemented, we've restricted ourselves to
+		// one background color for each `Preformatted`, and this is not exposed to the `DispValue`
+		// implementer.  We need to do some significant re-implementation to expose background
+		// colors and attributes to the `DispValue`, and to make those work efficiently with
+		// highlighting.
+		let highlight = 2; // TODO Don't hardcode
 		let mut all = prefix;
-		all.extend(self.content[line].clone().into_iter()); // Is clone.into_iter necessary?
+		let maybe_line = match search {
+			Some(info) => info.matches.get(&line),
+			None => None,
+		};
+		let content = match maybe_line { // TODO Extend to foreground color and attrs as well
+			Some(matches) => {
+				self.content[line].iter().enumerate().flat_map(|(i, item)| {
+					match matches.get(&i) {
+						None => vec![item.clone()],
+						Some(regions) => {
+							match item {
+								Output::Str(s) => {
+									let mut ret = vec![];
+									let mut last = 0;
+									for (start, end) in regions {
+										ret.append(&mut vec![
+											Output::Str(s[last..*start].to_string()),
+											Output::Bg(highlight),
+											Output::Str(s[*start..*end].to_string()),
+											Output::Bg(bg),
+										]);
+										last = *end;
+									}
+									ret.push(Output::Str(s[last..].to_string()));
+									ret
+								},
+								_ => panic!("Tried to highlight within a non-string"),
+							}
+						},
+					}
+				}).collect::<Vec<Output>>()
+			},
+			None => self.content[line].clone(),
+		};
+		all.push(Output::Bg(bg));
+		all.extend(content);
 		all.append(&mut vec![Output::Fg(0), Output::Bg(0)]);
-		let (mut curfg, mut curbg) = (0, 0);
-		all.into_iter().for_each(|elem| {
-			match elem {
-				Output::Str(s) => { ncurses::addstr(&s); },
-				Output::AttrOn(a) => { ncurses::attr_on(a); },
-				Output::AttrOff(a) => { ncurses::attr_off(a); },
-				Output::Fg(c) => { curfg = c; p.set(curfg, curbg); },
-				Output::Bg(c) => { curbg = c; p.set(curfg, curbg); },
-			}
-		});
+		Output::write(&all, p);
 	}
-	pub fn raw(&self) -> String {
+	pub fn raw(&self) -> String { // For debug
 		self.raw.join("/")
 	}
-	fn translate(&self, chunk: usize, idx: usize) -> (usize, usize) {
-		unimplemented!("translate");
+	fn translate(&self, chunk: usize, idx: usize) -> (usize, usize, usize) {
+		let (k, v) = self.mapping.range((Bound::Unbounded, Bound::Included((chunk, idx)))).rev().next().unwrap();
+		assert!(k.0 == chunk);
+		let delta = idx - k.1;
+		(v.0, v.1, v.2 + delta)
 	}
-	pub fn search(&self, q: &str) -> Vec<((usize, usize), (usize, usize))> {
-		unimplemented!("search");
+	pub fn search(&self, query: &str) -> Search {
+		// Get absolute start-end pairs for each match
+		/*let mut matches = self.raw.iter().enumerate().flat_map(|(i, chunk)| {
+			chunk.match_indices(query).map(|res| (self.translate(i, res.0), self.translate(i, res.0 + res.1.chars().count())))
+		}).peekable();*/
+		// The below is a standin until I get the above to work
+		let regex = Regex::new(query).unwrap(); // FIXME unwrap
+		let mut matchvec = vec![];
+		for (i, chunk) in self.raw.iter().enumerate() {
+			for res in regex.find_iter(chunk) {
+				matchvec.push((self.translate(i, res.start()), self.translate(i, res.end())));
+			}
+		}
+		let mut matches = matchvec.iter().peekable();
+
+		// Convert start-end pairs into start and end indices for each string in `content`
+		let mut splitpairs = vec![];
+		let mut on = false;
+		let getlineitem = |loc: &(usize, usize, usize)| (loc.0, loc.1);
+		for (i, line) in self.content.iter().enumerate() {
+			for (j, item) in line.iter().enumerate() {
+				if let Output::Str(s) = item {
+					loop {
+						if on {
+							let curend = matches.peek().unwrap().1; // Unwrap OK -- asserting `on` can't be true with empty `matches`
+							if getlineitem(&curend) > (i, j) {
+								splitpairs.push((i, j, 0, s.chars().count()));
+								break;
+							}
+							else {
+								splitpairs.push((i, j, 0, curend.2));
+								on = false;
+								matches.next();
+							}
+						}
+						else if matches.peek().is_some() {
+							let next = matches.peek().unwrap().clone(); // Would prefer to use `if let` rather than unwrapping here, but the borrow checker won't let me
+							if getlineitem(&next.0) > (i, j) {
+								break;
+							}
+							else if getlineitem(&next.1) > (i, j) {
+								splitpairs.push((i, j, (next.0).2, s.chars().count()));
+								on = true;
+								break;
+							}
+							else {
+								splitpairs.push((i, j, (next.0).2, (next.1).2));
+								matches.next();
+							}
+						}
+						else {
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		// Place the indices in a nested map for easy access later
+		let mut matchmap: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>> = BTreeMap::new();
+		for (line, item, start, end) in splitpairs {
+			matchmap.entry(line).or_insert(BTreeMap::new()).entry(item).or_insert(BTreeSet::new()).insert((start, end));
+		}
+
+		Search { query: query.to_string(), matches: matchmap }
 	}
 }
 
@@ -69,12 +177,8 @@ impl FmtCmd {
 
 	fn internal_format(output: &mut Preformatted, content: &FmtCmd, startcol: usize, color: usize, color_offset: usize, record: bool) -> usize {
 		let addchar = |target: &mut Vec<Output>, c: char| {
-			// Ergh I can't make these all part of the same if statement because apparently the
-			// borrow in the first condition remains until the end of the whole if/else sequence,
-			// when I think it should be released as soon as its condition evaluates to false.
-			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; }
-			if target.last().is_some() { target.push(Output::Str(c.to_string())) }
-			else { target.push(Output::Str(c.to_string())) }
+			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; } // FIXME Using early return to avoid borrow-checker issues with an if-else representation
+			target.push(Output::Str(c.to_string()));
 		};
 		let append = |target: &mut Vec<Vec<Output>>, mut content: Vec<Vec<Output>>| {
 			if content.len() == 0 {}
@@ -133,14 +237,19 @@ impl FmtCmd {
 					if record {
 						output.raw.last_mut().unwrap().push(c); // Unwrap OK -- `raw` guaranteed non-empty
 						if need_mapping && cnt > 0 {
-							let add_mapping = |charlen: usize, offset: usize| {
-								// TODO output.mapping[(output.raw.len() - 1, output.raw.last().unwrap().chars().count() - offset)] =
-								//	if output.content.len() > 0 { (output.content.len() - 1, output.content.last().unwrap().len() + cur.chars().count() - charlen) }
-								//	else { (0, cur.chars().count() - charlen) };
+							let mut add_mapping = |charlen: usize, offset: usize| {
+								let line = std::cmp::max(output.content.len() as isize - 1, 0) as usize;
+								let item = output.content.last().map(|x| x.len()).unwrap_or(0) + cur.len() - 1;
+								let idx = match cur.last() {
+									Some(Output::Str(s)) => s.len() - charlen,
+									_ => 0
+								};
+								// Note that the mapping is based on byte indices, not char
+								output.mapping.insert((output.raw.len() - 1, output.raw.last().unwrap().len() - offset), (line, item, idx));
 							};
 							if c as i32 == 9 {
 								add_mapping(TABWIDTH, 1);
-								add_mapping(0, 0);
+								add_mapping(0, 0); // Only necessary for tabs at end of line
 							}
 							else {
 								add_mapping(1, 1);
@@ -200,13 +309,26 @@ impl FmtCmd {
 	pub fn format(&self, width: usize, color_offset: usize) -> Preformatted {
 		let mut ret = Preformatted::new(width);
 		Self::internal_format(&mut ret, self, 0, 0 /* FIXME */, color_offset, true);
+		/*eprintln!("RAW");
+		ret.raw.iter().enumerate().for_each(|(i, x)| eprintln!("\t{}: {:?}", i, x));
+		eprintln!("CONTENT");
+		ret.content.iter().enumerate().for_each(|(i, x)| {
+			x.iter().enumerate().for_each(|(j, y)| {
+				if let Output::Str(s) = y {
+					eprintln!("\t{}.{}: {:?}", i, j, s);
+				}
+			});
+		});
+		eprintln!("MAPPING");
+		ret.mapping.iter().for_each(|(k, v)| eprintln!("\t{:?} -> {:?}", k, v));
+		eprintln!("====");*/
 		ret
 	}
 
 	pub fn contains(&self, q: &str) -> bool { // Search a value without having to preformat it
 		match self {
 			FmtCmd::Literal(value) => value.contains(q),
-			FmtCmd::Container(children) => children.iter().all(|x| x.contains(q)),
+			FmtCmd::Container(children) => children.iter().any(|x| x.contains(q)),
 			FmtCmd::Color(_, child) => child.contains(q),
 			FmtCmd::NoBreak(child) => child.contains(q),
 			FmtCmd::Exclude(_) => false,

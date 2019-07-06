@@ -3,11 +3,12 @@ extern crate ncurses;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
-use std::collections::{HashSet, HashMap};
+use std::collections::HashMap;
 use std::time;
 use keybinder::*;
 use format::*;
 use curses;
+use curses::Output;
 use ::errors::Result;
 
 const COLWIDTH: usize = 4;
@@ -17,12 +18,12 @@ pub trait DispValue<'a> {
 	fn placeholder(&self) -> FmtCmd;
 	fn content(&self) -> FmtCmd;
 	fn expandable(&self) -> bool;
-	fn index(&self) -> usize;
 	fn children(&self) -> Vec<Box<DispValue<'a> + 'a>>;
+	fn invoke(&self);
 }
 
 pub trait DispSource<'a, V: DispValue<'a>> {
-	fn read<T: std::io::Read>(input: T) -> Result<Box<Self>>;
+	//fn read<T: std::io::Read>(input: T) -> Result<Box<Self>>;
 	fn root(&'a self) -> V;
 	fn colors(&self) -> Vec<curses::Color>;
 }
@@ -32,11 +33,7 @@ struct DispNodeCache {
 	prefix1: String,
 	placeholder: Preformatted,
 	content: Preformatted,
-}
-
-struct DispNodeSearch {
-	query: String,
-	res: Vec<((usize, usize), (usize, usize))>,
+	search: Option<Search>,
 }
 
 struct DispNode<'a> {
@@ -46,11 +43,11 @@ struct DispNode<'a> {
 	next: Weak<RefCell<DispNode<'a>>>,
 	prevsib: Weak<RefCell<DispNode<'a>>>,
 	nextsib: Weak<RefCell<DispNode<'a>>>,
+	index: usize,
 	expanded: bool,
 	last: bool,
 	value: Box<DispValue<'a> + 'a>,
 	cache: DispNodeCache,
-	search: DispNodeSearch,
 }
 
 fn weak_ptr_eq<T>(a: &Weak<T>, b: &Weak<T>) -> bool { // Shim for Weak::ptr_eq https://github.com/rust-lang/rust/issues/55981
@@ -81,7 +78,7 @@ impl<'a> DispNode<'a> {
 			None => vec![],
 			Some(p) => {
 				let mut ret = p.borrow().path();
-				ret.push(self.value.index());
+				ret.push(self.index);
 				ret
 			},
 		}
@@ -165,7 +162,7 @@ impl<'a> DispNode<'a> {
 		self.cache.placeholder = self.value.placeholder().format(contentw, RESERVED_FG_COLORS);
 	}
 
-	fn new(parent: Weak<RefCell<DispNode<'a>>>, val: Box<DispValue<'a> + 'a>, width: usize, last: bool) -> Self {
+	fn new(parent: Weak<RefCell<DispNode<'a>>>, val: Box<DispValue<'a> + 'a>, width: usize, index: usize, last: bool) -> Self {
 		let mut ret = DispNode {
 			children: vec![],
 			parent: parent,
@@ -173,6 +170,7 @@ impl<'a> DispNode<'a> {
 			next: Weak::new(),
 			prevsib: Weak::new(),
 			nextsib: Weak::new(),
+			index: index,
 			expanded: false,
 			last: last,
 			value: val,
@@ -181,15 +179,15 @@ impl<'a> DispNode<'a> {
 				prefix1: "".to_string(),
 				placeholder: Preformatted::new(0),
 				content: Preformatted::new(0),
+				search: None,
 			},
-			search: DispNodeSearch { query: "".to_string(), res: vec![] },
 		};
 		ret.reformat(width);
 		ret
 	}
 
 	fn new_root(val: Box<DispValue<'a> + 'a>, width: usize) -> Self {
-		Self::new(Weak::new(), val, width, true)
+		Self::new(Weak::new(), val, width, 0, true)
 	}
 
 	fn expandable(&self) -> bool {
@@ -203,7 +201,7 @@ impl<'a> DispNode<'a> {
 				let lastidx = this.borrow().value.children().len() - 1;
 				let children = this.borrow().value.children();
 				for (i, child) in children.into_iter().enumerate() {
-					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx)));
+					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i, i == lastidx)));
 					this.borrow_mut().children.push(node.clone());
 					Self::insert(&mut cur, &mut node);
 					cur = node;
@@ -250,40 +248,30 @@ impl<'a> DispNode<'a> {
 			0 => &self.cache.prefix0,
 			_ => &self.cache.prefix1,
 		};
-		let mut prefix = vec![Output::Fg(1), Output::Str(prefixstr.to_string())];
-		if selected { prefix.push(Output::Bg(1)); } // Selected background
+		let prefix = vec![Output::Fg(1), Output::Str(prefixstr.to_string())];
+		let bg = match selected {
+			true => 1,
+			false => 0,
+		};
 		match self.expanded {
-			true => self.cache.placeholder.write(line, palette, prefix),
-			false => self.cache.content.write(line, palette, prefix),
+			true => self.cache.placeholder.write(line, palette, prefix, bg, &self.cache.search),
+			false => self.cache.content.write(line, palette, prefix, bg, &self.cache.search),
 		};
 	}
 
-	fn search(&mut self, q: &str, line: usize) -> Vec<usize> {
-		unimplemented!("search");
-		/*let fmt = match self.expanded {
+	fn search(&mut self, query: &str) {
+		let fmt = match self.expanded {
 			true => &self.cache.placeholder,
 			false => &self.cache.content,
 		};
-		if q != self.search.query {
-			self.search.query = q.to_string();
-			self.search.res = fmt.search(q);
-		};
-		let mut ret: Vec<usize> = vec![];
-		for res in &self.search.res {
-			if ((res.0).0 < line && (res.1).0 < line) || ((res.0).0 > line && (res.1).0 > line) { continue; }
-			let mut start = (res.0).1;
-			let mut stop = (res.1).1;
-			if (res.0).0 < line { start = 0; }
-			if (res.1).0 > line { stop = fmt.get(line).chars().count(); }
-			if ret.last() == Some(&start) {
-				ret.pop();
-				ret.push(stop);
-			}
-			else {
-				ret.append(&mut vec![start, stop]);
+		if query != "" {
+			if self.cache.search.is_none() || self.cache.search.as_ref().unwrap().query() != *query {
+				self.cache.search = Some(fmt.search(query));
 			}
 		}
-		ret*/
+		else if self.cache.search.is_some() {
+			self.cache.search = None;
+		}
 	}
 
 	// TODO iterator search_from
@@ -299,17 +287,8 @@ impl<'a> DispNode<'a> {
 		false
 	}
 
-	fn match_lines(&self) -> HashSet<usize> {
-		let mut ret: HashSet<usize> = HashSet::new();
-		match self.search.query.as_str() {
-			"" => ret,
-			_ => {
-				for res in &self.search.res {
-					for i in (res.0).0..=(res.1).0 { ret.insert(i); }
-				}
-				ret
-			},
-		}
+	fn matchlines(&self) -> Vec<usize> {
+		self.cache.search.as_ref().unwrap().matchlines()
 	}
 }
 
@@ -431,7 +410,7 @@ impl<'a> DispTree<'a> {
 		fgcol.extend(colors);
 		let bgcol = vec![
 			curses::Color { c8: 0, c256: 0 }, // regular
-			curses::Color { c8: 7, c256: 238 }, // selected
+			curses::Color { c8: 7, c256: 237 }, // selected
 			curses::Color { c8: 3, c256: 88 }, // highlighted
 		];
 		let palette = curses::Palette::new(fgcol, bgcol);
@@ -479,34 +458,28 @@ impl<'a> DispTree<'a> {
 			ncurses::clrtoeol();
 			let selected = weak_ptr_eq(&self.sel, &cur.node);
 			if let Some(node) = cur.node.upgrade() {
-				if DEBUG { /* TODO */ }
-				if self.query != "" { /* TODO */ }
+				if DEBUG {
+					let fill = std::iter::repeat(" ").take(self.size.w).collect::<String>();
+					ncurses::attron(ncurses::A_REVERSE());
+					ncurses::addstr(&fill);
+					ncurses::refresh();
+					std::thread::sleep(time::Duration::from_millis(100));
+					ncurses::mv(line as i32, 0);
+					ncurses::attroff(ncurses::A_REVERSE());
+					ncurses::addstr(&fill);
+					ncurses::mv(line as i32, 0);
+				}
+				node.borrow_mut().search(&self.query);
 				node.borrow().drawline(&self.palette, cur.line, selected);
 			}
 		}
 	}
 
 	fn drawlines(&self, lines: (usize, usize)) {
-		//eprintln!("Drawing lines {:?}", lines);
 		let mut cur = self.start.fwd(lines.0, false);
 		for i in lines.0..lines.1 {
 			self.drawline(i, cur.clone());
 			cur = cur.fwd(1, false);
-		}
-	}
-
-	fn setquery(&mut self, query: &str) {
-		self.query = query.to_string();
-		let mut redraw: HashMap<usize, DispPos> = HashMap::new();
-		let cur = self.start.clone().node.upgrade().unwrap();
-		let line = -(self.start.line as isize);
-		while line < self.size.h as isize {
-			for m in cur.borrow().match_lines() {
-				let matchline = line + m as isize;
-				if matchline >= 0 && matchline < self.size.h as isize {
-					redraw.insert(matchline as usize, DispPos::new(Rc::downgrade(&cur), m));
-				}
-			}
 		}
 	}
 
@@ -664,7 +637,7 @@ impl<'a> DispTree<'a> {
 			self.foreach(&|n: &mut DispNode| n.reformat(w));
 			let sel = self.sel.upgrade().unwrap();
 			self.refresh_offset();
-			self.select(sel);
+			self.select(sel); // TODO This causes an unnecessary redraw of the selection that we should try to avoid
 			self.refresh();
 		}
 	}
@@ -684,7 +657,7 @@ impl<'a> DispTree<'a> {
 		if sel.borrow().expanded { maxend = DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::nil()).unwrap(); }
 		if self.down { self.offset += lines_after - lines_before; }
 		let drawstart = match self.down {
-			true => self.offset - lines_after,
+			true => self.offset - lines_after + 1,
 			false => self.offset,
 		};
 		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed because of the (un)expansion.
@@ -701,12 +674,63 @@ impl<'a> DispTree<'a> {
 		self.adjust_offset(&|mut sel| DispNode::recursive_expand(&mut sel, w));
 	}
 
+	fn setquery(&mut self, query: &str) {
+		self.query = query.to_string();
+		let mut redraw: HashMap<usize, DispPos> = HashMap::new();
+		let mut cur = self.start.clone().node.upgrade().unwrap();
+		let mut line = -(self.start.line as isize);
+		let onscreen = |i: isize| i >= 0 && i < self.size.h as isize;
+		while line < self.size.h as isize {
+			if let Some(search) = cur.borrow().cache.search.as_ref() {
+				for m in search.matchlines() {
+					let matchline = line + m as isize;
+					if onscreen(matchline) {
+						redraw.insert(matchline as usize, DispPos::new(Rc::downgrade(&cur), m));
+					}
+				}
+			}
+			cur.borrow_mut().search(&self.query);
+			if self.query != "" {
+				for m in cur.borrow().cache.search.as_ref().unwrap().matchlines() { // Unwrap asserts `query` cannot be empty after calling `search()`
+					let matchline = line + m as isize;
+					if onscreen(matchline) {
+						redraw.insert(matchline as usize, DispPos::new(Rc::downgrade(&cur), m));
+					}
+				}
+			}
+			line += cur.borrow().lines() as isize;
+			let next = cur.borrow().next.upgrade();
+			match next {
+				None => break,
+				Some(n) => cur = n,
+			}
+		}
+		for (line, pos) in redraw {
+			self.drawline(line, pos);
+		}
+	}
+
 	fn searchnext(&mut self, offset: isize) {
 		unimplemented!("searchnext");
 	}
 
 	fn search(&mut self, forward: bool) {
-		unimplemented!("search");
+		if self.check_term_size() {
+			let oldquery = self.query.clone();
+			self.setquery("");
+			let incsearch = Box::new(|dt: &mut DispTree, q: &str| dt.setquery(q));
+			let size = self.size; // For borrowing
+			let palette = self.palette.clone();
+			let searchhist = self.searchhist.clone(); // Any way to avoid these expensive clones?
+			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, if forward { "/" } else { "?" }, "", searchhist, incsearch, &palette);
+			if res == "" {
+				self.setquery(&oldquery);
+			}
+			else {
+				self.searchhist.push(res);
+				//self.searchnext(if forward { 1 } else { -1 });
+			}
+		}
 	}
 
 	fn click(&mut self, y: usize) {
@@ -747,8 +771,10 @@ impl<'a> DispTree<'a> {
 	}
 
 	fn getnum(&self) -> usize {
-		if self.numbuf.is_empty() { 1 }
-		else { self.numbuf.iter().collect::<String>().parse::<usize>().unwrap() }
+		match self.numbuf.is_empty() {
+			true => 1,
+			false => self.numbuf.iter().collect::<String>().parse::<usize>().unwrap(),
+		}
 	}
 
 	fn seek(&self, rel: &Fn(&Rc<RefCell<DispNode<'a>>>) -> Weak<RefCell<DispNode<'a>>>) -> Rc<RefCell<DispNode<'a>>> {
@@ -762,16 +788,17 @@ impl<'a> DispTree<'a> {
 	}
 
 	pub fn interactive(&mut self) {
-		fn ncstr(s: &str) -> Vec<i32> {
-			s.chars().map(|c| c as i32).collect()
-		}
-
+		use curses::ncstr;
+		let digits = (0..=9).map(|x| ncstr(&x.to_string())).collect::<Vec<Vec<i32>>>();
+		let done = Arc::new(Mutex::new(false)); // TODO Don't use Arc and Mutex
+		let d = done.clone();
 		let mut keys: Keybinder<Self> = Keybinder::new();
+
 		keys.register(&[&[ncurses::KEY_RESIZE]], Box::new(|dt, _| { dt.resize(); }));
 		keys.register(&[&[ncurses::KEY_MOUSE]], Box::new(|dt, _| dt.mouse(curses::mouseevents())));
 		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.togglesel()));
 		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.recursive_expand()));
-		let digits = (0..=9).map(|x| ncstr(&x.to_string())).collect::<Vec<Vec<i32>>>();
+		keys.register(&[&ncstr("\n")], Box::new(|dt, _| { let sel = dt.sel.upgrade().unwrap(); sel.borrow().value.invoke(); dt.refresh(); }));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.refresh())); // ^L
 		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<DispNode<'a>>>| n.borrow().next.clone()); dt.select(sel); }));
@@ -791,10 +818,13 @@ impl<'a> DispTree<'a> {
 		keys.register(&[&[0x5]], Box::new(|dt, _| { dt.scroll(1); })); // ^E
 		keys.register(&[&[0x19]], Box::new(|dt, _| { dt.scroll(-1); })); // ^Y
 		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset as isize - (dt.size.h as isize) / 2; dt.scroll(dist); }));
-
-		let done = Arc::new(Mutex::new(false));
-		let d = done.clone();
+		keys.register(&[&ncstr("/")], Box::new(|dt, _| { dt.search(true); }));
+		keys.register(&[&ncstr("?")], Box::new(|dt, _| { dt.search(false); }));
+		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
+		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
+		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(""); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.lock().unwrap() = true; }));
+
 		self.resize();
 		while !*done.lock().unwrap() {
 			let cmd = keys.wait(self);

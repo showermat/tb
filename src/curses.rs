@@ -6,6 +6,16 @@ use self::ncurses::*;
 use self::libc_stdhandle::*;
 use std::ffi::CString;
 
+pub fn prompt_on() {
+	curs_set(CURSOR_VISIBILITY::CURSOR_VISIBLE);
+	mousemask(0, None);
+}
+
+pub fn prompt_off() {
+	curs_set(CURSOR_VISIBILITY::CURSOR_INVISIBLE);
+	mousemask(ALL_MOUSE_EVENTS as u32, None);
+}
+
 pub fn setup() { // TODO Check all the results of ncurses functions that can fail -- here and elsewhere in the code
 	//initscr();
 	unsafe {
@@ -22,20 +32,29 @@ pub fn setup() { // TODO Check all the results of ncurses functions that can fai
 	keypad(stdscr(), true);
 	cbreak();
 	noecho();
-	curs_set(CURSOR_VISIBILITY::CURSOR_INVISIBLE);
 	if !has_colors() { panic!("This terminal does not support color"); } // TODO Return a result -- even better, support monochrome mode
 	start_color();
 	idlok(stdscr(), true);
 	scrollok(stdscr(), true);
-	leaveok(stdscr(), true);
-	mousemask(ALL_MOUSE_EVENTS as u32, None);
+	leaveok(stdscr(), false);
+	prompt_off();
 }
 
+pub fn cleanup() {
+	endwin();
+}
+
+pub fn ncstr(s: &str) -> Vec<i32> {
+	s.chars().map(|c| c as i32).collect()
+}
+
+#[derive(Clone, Copy)]
 pub struct Color {
 	pub c8: u8,
 	pub c256: u8,
 }
 
+#[derive(Clone)]
 pub struct Palette {
 	fg: Vec<Color>,
 	bg: Vec<Color>,
@@ -63,10 +82,6 @@ impl Palette {
 	}
 }
 
-pub fn cleanup() {
-	endwin();
-}
-
 #[derive(Clone, Copy)]
 pub struct Size {
 	pub w: usize,
@@ -75,6 +90,12 @@ pub struct Size {
 
 pub fn scrsize() -> Size {
 	Size { w: COLS() as usize, h: LINES() as usize }
+}
+
+pub fn curpos() -> (usize, usize) {
+	let (mut y, mut x) = (0, 0);
+	getyx(stdscr(), &mut y, &mut x);
+	(y as usize, x as usize)
 }
 
 #[derive(Clone, Debug)]
@@ -133,3 +154,30 @@ pub fn mouseevents() -> Vec<MouseEvent> {
 	ret.reverse();
 	ret
 }
+
+#[derive(Clone, Debug)]
+pub enum Output {
+	Str(String),
+	AttrOn(ncurses::attr_t),
+	AttrOff(ncurses::attr_t),
+	Fg(usize),
+	Bg(usize),
+	Move(usize, usize),
+}
+
+impl Output {
+	pub fn write(line: &[Output], p: &Palette) {
+		let (mut curfg, mut curbg) = (0, 0);
+		line.iter().for_each(|elem| {
+			match elem {
+				Output::Str(s) => { ncurses::addstr(&s); },
+				Output::AttrOn(a) => { ncurses::attr_on(*a); },
+				Output::AttrOff(a) => { ncurses::attr_off(*a); },
+				Output::Fg(c) => { curfg = *c; p.set(curfg, curbg); },
+				Output::Bg(c) => { curbg = *c; p.set(curfg, curbg); },
+				Output::Move(y, x) => { ncurses::mv(*y as i32, *x as i32); },
+			}
+		});
+	}
+}
+

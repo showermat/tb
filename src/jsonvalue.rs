@@ -1,8 +1,8 @@
 use ::errors::*;
 use ::disptree::{DispSource, DispValue};
 use ::format::FmtCmd;
-use ::serde_json::{from_reader, Value};
 use ::curses::Color;
+use ::serde_json::{from_reader, Value};
 
 const HI_STR: usize = 0;
 const HI_KWD: usize = 1;
@@ -20,9 +20,7 @@ enum ParentType {
 pub struct JsonValue<'a> {
 	key: String,
 	value: &'a Value,
-	idx: usize,
 	parent: ParentType,
-	depth: usize,
 }
 
 impl<'a> JsonValue<'a> {
@@ -44,7 +42,7 @@ impl<'a> JsonValue<'a> {
 	}
 	fn fmtkey(&self) -> FmtCmd {
 		match self.parent {
-			ParentType::Root => FmtCmd::color(HI_MUT, FmtCmd::lit("root")),
+			ParentType::Root => FmtCmd::exclude(FmtCmd::color(HI_MUT, FmtCmd::lit("root"))),
 			ParentType::Object => FmtCmd::color(HI_KEY, Self::fmtstr(&self.key)),
 			ParentType::Array => FmtCmd::exclude(FmtCmd::color(HI_MUT, Self::fmtstr(&self.key))),
 		}
@@ -77,36 +75,37 @@ impl<'a> DispValue<'a> for JsonValue<'a> {
 			_ => false,
 		}
 	}
-	fn index(&self) -> usize {
-		self.idx
-	}
 	fn children(&self) -> Vec<Box<DispValue<'a> + 'a>> {
 		match self.value {
 			Value::Array(items) =>
-				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, idx: i, parent: ParentType::Array, depth: self.depth + 1 }) as Box<DispValue>).collect(),
+				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, parent: ParentType::Array }) as Box<DispValue>).collect(),
 			Value::Object(items) =>
-				items.iter().enumerate().map(|(i, (k, v))| Box::new(JsonValue { key: k.to_string(), value: &v, idx: i, parent: ParentType::Object, depth: self.depth + 1 }) as Box<DispValue>).collect(),
+				items.iter().map(|(k, v)| Box::new(JsonValue { key: k.to_string(), value: &v, parent: ParentType::Object }) as Box<DispValue>).collect(),
 			_ => vec![],
 		}
 	}
+	fn invoke(&self) { }
 }
 
 pub struct JsonSource {
 	json: Value,
 }
 
-impl<'a> DispSource<'a, JsonValue<'a>> for JsonSource {
-	fn read<T: std::io::Read>(input: T) -> Result<Box<Self>> {
+impl JsonSource {
+	pub fn read<T: std::io::Read>(input: T) -> Result<Box<Self>> {
 		Ok(Box::new(Self { json: from_reader(input).chain_err(|| "could not parse input as JSON")? }))
 	}
+}
+
+impl<'a> DispSource<'a, JsonValue<'a>> for JsonSource {
 	fn root(&'a self) -> JsonValue<'a> {
-		JsonValue { key: "root".to_string(), value: &self.json, idx: 0, parent: ParentType::Root, depth: 0 }
+		JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root }
 	}
 	fn colors(&self) -> Vec<Color> {
 		vec![
 			Color { c8: 2, c256: 77 }, // string
 			Color { c8: 1, c256: 214 }, // keyword
-			Color { c8: 5, c256: 183 }, // key
+			Color { c8: 5, c256: 177 }, // key
 			Color { c8: 4, c256: 244 }, // muted
 		]
 	}

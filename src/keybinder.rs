@@ -29,9 +29,9 @@ impl<T> Node<T> {
 		if let Some(ref mut a) = self.action { let x: &mut FnMut(&mut T, &[i32]) = &mut *a.borrow_mut(); x(t, path); }
 		if self.children.is_empty() { path.to_vec() }
 		else {
-			//ncurses::timeout(1000); // If we want to time out after 1 second
+			ncurses::timeout(4000);
 			let next = ncurses::getch();
-			//ncurses::timeout(-1);
+			ncurses::timeout(-1);
 			if next == ncurses::ERR { path.to_vec() }
 			else {
 				let mut nextpath = path.to_vec();
@@ -59,4 +59,3 @@ impl<'a, T> Keybinder<T> {
 		self.root.wait(t, &[])
 	}
 }
-

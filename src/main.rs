@@ -3,6 +3,7 @@ extern crate error_chain;
 #[macro_use]
 extern crate clap;
 extern crate serde_json;
+extern crate regex;
 
 mod errors {
 	error_chain! { }
@@ -12,7 +13,9 @@ mod format;
 mod disptree;
 mod keybinder;
 mod curses;
+mod prompt;
 mod jsonvalue;
+mod fsvalue;
 
 use errors::*;
 use disptree::*;
@@ -20,8 +23,6 @@ use jsonvalue::*;
 
 /*
  * TODO:
- *     Search
- *     Cut down on excess redrawing
  *     Delay in mouse events
  *     TODOs, FIXMEs, and `unwrap()`s
  * Future:
@@ -38,21 +39,27 @@ use jsonvalue::*;
 fn run() -> Result<()> {
 	let args = clap_app!(jsonb =>
 		(version: crate_version!())
-		(about: "Curses-style JSON viewer and editor")
+		(about: "Command-line interactive JSON browser")
 		(@arg file:  index(1) "The file to read")
 	).get_matches();
 
-	let json: Box<JsonSource> = if let Some(fname) = args.value_of("file") {
-		JsonSource::read(std::io::BufReader::new(std::fs::File::open(fname).chain_err(|| "could not open file")?))
-	}
-	else {
-		let stdin = std::io::stdin();
-		let inlock = stdin.lock();
-		JsonSource::read(inlock)
+	let json: Box<JsonSource> = match args.value_of("file") {
+		Some(fname) => JsonSource::read(std::io::BufReader::new(std::fs::File::open(fname).chain_err(|| "could not open file")?)),
+		None => {
+			let stdin = std::io::stdin();
+			let inlock = stdin.lock();
+			JsonSource::read(inlock)
+		},
 	}.chain_err(|| "failed to load input data")?;
 	curses::setup();
 	let mut dt = DispTree::new(Box::new(json.root()), json.colors());
 	dt.interactive();
+	
+	/*let fs = fsvalue::FsSource::new(args.value_of("file").unwrap_or("."))?;
+	curses::setup();
+	let mut dt = DispTree::new(Box::new(fs.root()), fs.colors());
+	dt.interactive();*/
+	
 	curses::cleanup();
 	Ok(())
 }
