@@ -92,68 +92,74 @@ impl Preformatted {
 		(v.0, v.1, v.2 + delta)
 	}
 	pub fn search(&self, query: &str) -> Search {
-		// Get absolute start-end pairs for each match
-		/*let mut matches = self.raw.iter().enumerate().flat_map(|(i, chunk)| {
-			chunk.match_indices(query).map(|res| (self.translate(i, res.0), self.translate(i, res.0 + res.1.chars().count())))
-		}).peekable();*/
-		// The below is a standin until I get the above to work
-		let regex = Regex::new(query).unwrap(); // FIXME unwrap
-		let mut matchvec = vec![];
-		for (i, chunk) in self.raw.iter().enumerate() {
-			for res in regex.find_iter(chunk) {
-				matchvec.push((self.translate(i, res.start()), self.translate(i, res.end())));
-			}
-		}
-		let mut matches = matchvec.iter().peekable();
+		let matchmap = match self.mapping.is_empty() {
+			true => BTreeMap::new(), // No searchable content in this node, so no matches possible
+			false => {
+				// Get absolute start-end pairs for each match
+				/*let mut matches = self.raw.iter().enumerate().flat_map(|(i, chunk)| {
+					chunk.match_indices(query).map(|res| (self.translate(i, res.0), self.translate(i, res.0 + res.1.chars().count())))
+				}).peekable();*/
+				// The below is a standin until I get the above to work
+				let regex = Regex::new(query).unwrap_or(Regex::new(&regex::escape(query)).expect("Regex construction failed even after escaping"));
+				let mut matchvec = vec![];
+				for (i, chunk) in self.raw.iter().enumerate() {
+					for res in regex.find_iter(chunk) {
+						matchvec.push((self.translate(i, res.start()), self.translate(i, res.end())));
+					}
+				}
+				let mut matches = matchvec.iter().peekable();
 
-		// Convert start-end pairs into start and end indices for each string in `content`
-		let mut splitpairs = vec![];
-		let mut on = false;
-		let getlineitem = |loc: &(usize, usize, usize)| (loc.0, loc.1);
-		for (i, line) in self.content.iter().enumerate() {
-			for (j, item) in line.iter().enumerate() {
-				if let Output::Str(s) = item {
-					loop {
-						if on {
-							let curend = matches.peek().unwrap().1; // Unwrap OK -- asserting `on` can't be true with empty `matches`
-							if getlineitem(&curend) > (i, j) {
-								splitpairs.push((i, j, 0, s.chars().count()));
-								break;
+				// Convert start-end pairs into start and end indices for each string in `content`
+				let mut splitpairs = vec![];
+				let mut on = false;
+				let getlineitem = |loc: &(usize, usize, usize)| (loc.0, loc.1);
+				for (i, line) in self.content.iter().enumerate() {
+					for (j, item) in line.iter().enumerate() {
+						if let Output::Str(s) = item {
+							loop {
+								if on {
+									let curend = matches.peek().unwrap().1; // Unwrap OK -- asserting `on` can't be true with empty `matches`
+									if getlineitem(&curend) > (i, j) {
+										splitpairs.push((i, j, 0, s.chars().count()));
+										break;
+									}
+									else {
+										splitpairs.push((i, j, 0, curend.2));
+										on = false;
+										matches.next();
+									}
+								}
+								else if matches.peek().is_some() {
+									let next = matches.peek().unwrap().clone(); // Would prefer to use `if let` rather than unwrapping here, but the borrow checker won't let me
+									if getlineitem(&next.0) > (i, j) {
+										break;
+									}
+									else if getlineitem(&next.1) > (i, j) {
+										splitpairs.push((i, j, (next.0).2, s.chars().count()));
+										on = true;
+										break;
+									}
+									else {
+										splitpairs.push((i, j, (next.0).2, (next.1).2));
+										matches.next();
+									}
+								}
+								else {
+									break;
+								}
 							}
-							else {
-								splitpairs.push((i, j, 0, curend.2));
-								on = false;
-								matches.next();
-							}
-						}
-						else if matches.peek().is_some() {
-							let next = matches.peek().unwrap().clone(); // Would prefer to use `if let` rather than unwrapping here, but the borrow checker won't let me
-							if getlineitem(&next.0) > (i, j) {
-								break;
-							}
-							else if getlineitem(&next.1) > (i, j) {
-								splitpairs.push((i, j, (next.0).2, s.chars().count()));
-								on = true;
-								break;
-							}
-							else {
-								splitpairs.push((i, j, (next.0).2, (next.1).2));
-								matches.next();
-							}
-						}
-						else {
-							break;
 						}
 					}
 				}
-			}
-		}
 
-		// Place the indices in a nested map for easy access later
-		let mut matchmap: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>> = BTreeMap::new();
-		for (line, item, start, end) in splitpairs {
-			matchmap.entry(line).or_insert(BTreeMap::new()).entry(item).or_insert(BTreeSet::new()).insert((start, end));
-		}
+				// Place the indices in a nested map for easy access later
+				let mut matchmap: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>> = BTreeMap::new();
+				for (line, item, start, end) in splitpairs {
+					matchmap.entry(line).or_insert(BTreeMap::new()).entry(item).or_insert(BTreeSet::new()).insert((start, end));
+				}
+				matchmap
+			},
+		};
 
 		Search { query: query.to_string(), matches: matchmap }
 	}
@@ -181,7 +187,7 @@ impl FmtCmd {
 			target.push(Output::Str(c.to_string()));
 		};
 		let append = |target: &mut Vec<Vec<Output>>, mut content: Vec<Vec<Output>>| {
-			if content.len() == 0 {}
+			if content.len() == 0 { }
 			else if target.len() == 0 { target.append(&mut content); }
 			else {
 				target.last_mut().unwrap().append(&mut content[0]);
@@ -220,7 +226,10 @@ impl FmtCmd {
 				};
 				for c in value.chars() {
 					match c {
-						'\n' => newline(output, &mut cur, &mut cnt, &mut need_mapping),
+						'\n' => {
+							addchar(&mut cur, ' ');
+							newline(output, &mut cur, &mut cnt, &mut need_mapping);
+						},
 						'\t' => {
 							if output.width > 0 && cnt >= output.width - TABWIDTH { newline(output, &mut cur, &mut cnt, &mut need_mapping); }
 							cur.push(Output::Str(std::iter::repeat(" ").take(TABWIDTH).collect::<String>())); // TODO What if width < 4?
@@ -279,12 +288,14 @@ impl FmtCmd {
 					1 => {
 						let rawstart = (output.raw.len() - 1, output.raw.last().unwrap().len());
 						let valstart = match output.content.last() {
-							None => (0, 0),
-							Some(outlast) => (output.content.len() - 1, outlast.len()),
+							None => (0, 0, 0),
+							Some(outlast) => (output.content.len() - 1, outlast.len(), 0),
 						};
-						/*for (k, v) in sub.mapping {
-							output.mapping[...] = ...;
-						}*/
+						for (k, v) in sub.mapping {
+							let key = (k.0 + rawstart.0, if k.0 == 0 { k.1 + rawstart.1 } else { k.1 });
+							let val = (v.0 + valstart.0, if v.0 == 0 { v.1 + valstart.1 } else { v.1 }, 0);
+							output.mapping.insert(key, val);
+						}
 						strappend(&mut output.raw, sub.raw);
 						if output.width == 0 || sublen <= output.width - startcol {
 							append(&mut output.content, sub.content);
@@ -300,7 +311,6 @@ impl FmtCmd {
 				}
 			},
 			FmtCmd::Exclude(child) => {
-				output.raw.push("".to_string());
 				Self::internal_format(output, child, startcol, color, color_offset, false)
 			},
 		}
