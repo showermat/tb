@@ -36,8 +36,10 @@ impl<T> Node<T> {
 			else {
 				let mut nextpath = path.to_vec();
 				nextpath.push(next);
-				if self.children.contains_key(&next) { self.children.get_mut(&next).unwrap().wait(t, &nextpath) }
-				else { nextpath.to_vec() }
+				match self.children.get_mut(&next) {
+					Some(child) => child.wait(t, &nextpath),
+					None => nextpath.to_vec(),
+				}
 			}
 		}
 	}

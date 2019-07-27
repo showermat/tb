@@ -1,4 +1,5 @@
 use ::curses;
+use ::curses::Key;
 use ::curses::Output;
 
 struct Prompt<'a, T> {
@@ -29,7 +30,6 @@ fn graphwidth(s: &[char]) -> usize {
 	s.iter().map(|c| charwidth(*c)).sum()
 }
 fn printchar(c: char) -> Vec<Output> {
-	// TODO COLORS!
 	if c.is_ascii_control() {
 		let content =
 			if c as i32 == 127 { "^?".to_string() }
@@ -47,10 +47,9 @@ fn move_in_line(by: isize) { // Apparently ncurses doesn't provide relative move
 }
 
 impl<'a, T> Prompt<'a, T> {
-	fn new(t: &'a mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, history: Vec<String>, callback: Box<FnMut(&mut T, &str)>, palette: &'a curses::Palette) -> Self {
-		let mut fullhist = history;
-		fullhist.push(init.to_string());
-		let histlen = fullhist.len();
+	fn new(t: &'a mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, mut history: Vec<String>, callback: Box<FnMut(&mut T, &str)>, palette: &'a curses::Palette) -> Self {
+		history.push(init.to_string());
+		let histlen = history.len();
 		let promptw = prompt.chars().count();
 		assert!(promptw < width); // TODO Handle this more gracefully
 		Prompt {
@@ -58,7 +57,7 @@ impl<'a, T> Prompt<'a, T> {
 			location: location,
 			width: width - promptw,
 			prompt: prompt.to_string(),
-			history: fullhist,
+			history: history,
 			callback: callback,
 			histidx: histlen - 1,
 			buf: vec![],
@@ -174,12 +173,12 @@ impl<'a, T> Prompt<'a, T> {
 		}
 	}
 	fn read(&mut self) -> String {
-		let init = self.history.last().unwrap().clone();
+		let init = self.history.last().expect("Prompt history is empty").clone();
 		self.reset(&init);
 		loop {
-			match ncurses::getch() {
-				0x0a => return self.buf.iter().collect::<String>(), // Enter
-				0x7f => { // Backspace
+			match curses::read(-1) {
+				Key::Char('\x0a') => return self.buf.iter().collect::<String>(), // Enter
+				Key::Char('\x7f') => { // Backspace
 					if self.pos <= 0 { continue; }
 					self.seek(-1);
 					let rmwidth = charwidth(self.buf[self.pos]);
@@ -196,7 +195,7 @@ impl<'a, T> Prompt<'a, T> {
 					self.draw_from(pos);
 					self.do_callback();
 				},
-				ncurses::KEY_DC => { // Delete key
+				Key::Special(ncurses::KEY_DC) => { // Delete key
 					if self.pos >= self.buf.len() { continue; }
 					let rmwidth = charwidth(self.buf[self.pos]);
 					self.buf.remove(self.pos);
@@ -206,29 +205,15 @@ impl<'a, T> Prompt<'a, T> {
 					self.draw_from(pos);
 					self.do_callback();
 				}
-				0x01 | ncurses::KEY_HOME => { let newpos = -(self.pos as isize); self.seek(newpos); }, // ^A
-				0x05 | ncurses::KEY_END => { let newpos = (self.buf.len() - self.pos) as isize; self.seek(newpos); }, // ^E
-				0x1b => { return "".to_string(); }, // Escape
-				ncurses::KEY_RIGHT => self.seek(1),
-				ncurses::KEY_LEFT => self.seek(-1),
-				ncurses::KEY_UP => self.histseek(-1),
-				ncurses::KEY_DOWN => self.histseek(1),
-				ncurses::KEY_RESIZE => (), // TODO This needs to be handled
-				key if key >= 256 => (), // Other ncurses special keys
-				key => {
-					let mut utf_input = vec![key as u8];
-					let k = key as u8;
-					if k & 0x80 != 0 { // UTF-8 input // TODO Consider moving this to curses.rs
-						let charlen =
-							if k & 0xf8 == 0xf0 { 3 }
-							else if k & 0xf0 == 0xe0 { 2 }
-							else if k & 0xe0 == 0xc0 { 1 }
-							else { 0 };
-						for _ in 0..charlen { utf_input.push(ncurses::getch() as u8); }
-					}
-					let utfstr = String::from_utf8(utf_input).unwrap();
-					assert!(utfstr.chars().count() == 1);
-					let c = utfstr.chars().nth(0).unwrap();
+				Key::Char('\x01') | Key::Special(ncurses::KEY_HOME) => { let newpos = -(self.pos as isize); self.seek(newpos); }, // ^A
+				Key::Char('\x05') | Key::Special(ncurses::KEY_END) => { let newpos = (self.buf.len() - self.pos) as isize; self.seek(newpos); }, // ^E
+				Key::Char('\x1b') => { return "".to_string(); }, // Escape
+				Key::Special(ncurses::KEY_RIGHT) => self.seek(1),
+				Key::Special(ncurses::KEY_LEFT) => self.seek(-1),
+				Key::Special(ncurses::KEY_UP) => self.histseek(-1),
+				Key::Special(ncurses::KEY_DOWN) => self.histseek(1),
+				Key::Special(ncurses::KEY_RESIZE) => (), // TODO This needs to be handled
+				Key::Char(c) => {
 					self.buf.insert(self.pos, c);
 					self.dispw += charwidth(c);
 					self.dispn += 1;
@@ -244,6 +229,7 @@ impl<'a, T> Prompt<'a, T> {
 					self.seek(1);
 					self.do_callback();
 				},
+				_ => (),
 			};
 		}
 	}

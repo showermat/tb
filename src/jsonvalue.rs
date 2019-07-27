@@ -1,5 +1,5 @@
 use ::errors::*;
-use ::disptree::{DispSource, DispValue};
+use ::disptree::{DispFactory, DispSource, DispValue, DispInfo};
 use ::format::FmtCmd;
 use ::curses::Color;
 use ::serde_json::{from_reader, Value};
@@ -92,14 +92,40 @@ pub struct JsonSource {
 }
 
 impl JsonSource {
-	pub fn read<T: std::io::Read>(input: T) -> Result<Box<Self>> {
+	pub fn read<T: std::io::Read>(input: T) -> Result<Box<DispSource>> {
 		Ok(Box::new(Self { json: from_reader(input).chain_err(|| "could not parse input as JSON")? }))
 	}
 }
 
-impl<'a> DispSource<'a, JsonValue<'a>> for JsonSource {
-	fn root(&'a self) -> JsonValue<'a> {
-		JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root }
+impl DispSource for JsonSource {
+	fn root<'a>(&'a self) -> Box<DispValue<'a> + 'a> {
+		Box::new(JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root })
+	}
+}
+
+pub struct JsonFactory { }
+
+impl DispFactory for JsonFactory {
+	fn info(&self) -> DispInfo {
+		DispInfo { name: "j", desc: "Browse JSON documents" }
+	}
+	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<DispSource>>> {
+		match args.get(0).cloned() { // TODO Why is the `cloned` here necessary?
+			Some("-h") | Some("--help") => {
+				print!(r#"jb: Browse JSON documents interactively
+
+Provide the name of the input file to read as the sole command-line argument, or
+provide no arguments to read from standard input.
+"#);
+				None
+			},
+			Some(fname) => Some(std::fs::File::open(fname).chain_err(|| "could not open file").and_then(|file| JsonSource::read(std::io::BufReader::new(file)))),
+			None => {
+				let stdin = std::io::stdin();
+				let inlock = stdin.lock();
+				Some(JsonSource::read(inlock))
+			},
+		}
 	}
 	fn colors(&self) -> Vec<Color> {
 		vec![
@@ -109,4 +135,8 @@ impl<'a> DispSource<'a, JsonValue<'a>> for JsonSource {
 			Color { c8: 4, c256: 244 }, // muted
 		]
 	}
+}
+
+pub fn get_factory() -> Box<DispFactory> {
+	Box::new(JsonFactory { })
 }

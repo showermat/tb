@@ -86,7 +86,7 @@ impl Preformatted {
 		self.raw.join("/")
 	}
 	fn translate(&self, chunk: usize, idx: usize) -> (usize, usize, usize) {
-		let (k, v) = self.mapping.range((Bound::Unbounded, Bound::Included((chunk, idx)))).rev().next().unwrap();
+		let (k, v) = self.mapping.range((Bound::Unbounded, Bound::Included((chunk, idx)))).rev().next().expect("No format chunk contains the requested index");
 		assert!(k.0 == chunk);
 		let delta = idx - k.1;
 		(v.0, v.1, v.2 + delta)
@@ -118,7 +118,7 @@ impl Preformatted {
 						if let Output::Str(s) = item {
 							loop {
 								if on {
-									let curend = matches.peek().unwrap().1; // Unwrap OK -- asserting `on` can't be true with empty `matches`
+									let curend = matches.peek().expect("Lost closing match in search").1;
 									if getlineitem(&curend) > (i, j) {
 										splitpairs.push((i, j, 0, s.chars().count()));
 										break;
@@ -130,7 +130,7 @@ impl Preformatted {
 									}
 								}
 								else if matches.peek().is_some() {
-									let next = matches.peek().unwrap().clone(); // Would prefer to use `if let` rather than unwrapping here, but the borrow checker won't let me
+									let next = matches.peek().expect("Failed to extract from non-empty iterator").clone();
 									if getlineitem(&next.0) > (i, j) {
 										break;
 									}
@@ -190,7 +190,7 @@ impl FmtCmd {
 			if content.len() == 0 { }
 			else if target.len() == 0 { target.append(&mut content); }
 			else {
-				target.last_mut().unwrap().append(&mut content[0]);
+				target.last_mut().expect("Couldn't get last element from non-empty vector").append(&mut content[0]);
 				target.extend(content.into_iter().skip(1));
 			}
 		};
@@ -198,7 +198,7 @@ impl FmtCmd {
 			if content.len() == 0 {}
 			else if target.len() == 0 { target.append(&mut content); }
 			else {
-				target.last_mut().unwrap().push_str(&mut content[0]);
+				target.last_mut().expect("Couldn't get last element from non-empty vector").push_str(&mut content[0]);
 				target.extend(content.into_iter().skip(1));
 			}
 		};
@@ -231,20 +231,24 @@ impl FmtCmd {
 							newline(output, &mut cur, &mut cnt, &mut need_mapping);
 						},
 						'\t' => {
-							if output.width > 0 && cnt >= output.width - TABWIDTH { newline(output, &mut cur, &mut cnt, &mut need_mapping); }
+							if output.width > 0 && cnt >= output.width - TABWIDTH {
+								newline(output, &mut cur, &mut cnt, &mut need_mapping);
+							}
 							cur.push(Output::Str(std::iter::repeat(" ").take(TABWIDTH).collect::<String>())); // TODO What if width < 4?
 							cnt += TABWIDTH;
 							need_mapping = true;
 						},
 						c => {
 							let cw = wcwidth::char_width(c).unwrap_or(0) as usize;
-							if output.width > 0 && cnt + cw > output.width { newline(output, &mut cur, &mut cnt, &mut need_mapping); }
+							if output.width > 0 && cnt + cw > output.width {
+								newline(output, &mut cur, &mut cnt, &mut need_mapping);
+							}
 							addchar(&mut cur, c);
 							cnt += cw;
 						},
 					}
 					if record {
-						output.raw.last_mut().unwrap().push(c); // Unwrap OK -- `raw` guaranteed non-empty
+						output.raw.last_mut().expect("Found a preformatted with an empty raw").push(c);
 						if need_mapping && cnt > 0 {
 							let mut add_mapping = |charlen: usize, offset: usize| {
 								let line = std::cmp::max(output.content.len() as isize - 1, 0) as usize;
@@ -254,7 +258,7 @@ impl FmtCmd {
 									_ => 0
 								};
 								// Note that the mapping is based on byte indices, not char
-								output.mapping.insert((output.raw.len() - 1, output.raw.last().unwrap().len() - offset), (line, item, idx));
+								output.mapping.insert((output.raw.len() - 1, output.raw.last().expect("Found a preformatted with an empty raw").len() - offset), (line, item, idx));
 							};
 							if c as i32 == 9 {
 								add_mapping(TABWIDTH, 1);
@@ -286,7 +290,7 @@ impl FmtCmd {
 				match sub.content.len() {
 					0 => startcol,
 					1 => {
-						let rawstart = (output.raw.len() - 1, output.raw.last().unwrap().len());
+						let rawstart = (output.raw.len() - 1, output.raw.last().expect("Found a preformatted with an empty raw").len());
 						let valstart = match output.content.last() {
 							None => (0, 0, 0),
 							Some(outlast) => (output.content.len() - 1, outlast.len(), 0),
@@ -302,7 +306,7 @@ impl FmtCmd {
 							startcol + sublen
 						}
 						else {
-							assert!(sublen < output.width); // TODO Support this
+							assert!(sublen < output.width); // FIXME What should we do if the screen is narrower than a nowrap?
 							output.content.append(&mut sub.content);
 							sublen
 						}

@@ -2,14 +2,14 @@ extern crate ncurses;
 
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::time;
+use std::iter;
 use keybinder::*;
 use format::*;
 use curses;
 use curses::Output;
-use ::errors::Result;
+use ::errors::*;
 
 const COLWIDTH: usize = 4;
 const RESERVED_FG_COLORS: usize = 2;
@@ -22,10 +22,67 @@ pub trait DispValue<'a> {
 	fn invoke(&self);
 }
 
-pub trait DispSource<'a, V: DispValue<'a>> {
-	//fn read<T: std::io::Read>(input: T) -> Result<Box<Self>>;
-	fn root(&'a self) -> V;
+/*impl<'a> DispValue<'a> {
+	fn get_children(&self, fwd: bool) -> impl Iterator<Item=(usize, Box<DispValue<'a> + 'a>)> {
+		let mut c =
+			if self.expandable() { self.children() }
+			else { vec![] };
+		if !fwd { c.reverse(); }
+		let n = c.len();
+		let mut children = c.iter().enumerate();
+		iter::from_fn(move || {
+			children.next().map(|(i, child)| {
+				let idx = if fwd { i } else { n - i - 1 };
+				(idx, *child)
+			})
+		})
+	}
+	fn dfs_fwd(root: Box<DispValue<'a> + 'a>, query: &str, start: &[usize]) -> impl Iterator<Item=Vec<usize>> {
+		let mut stack: Vec<(Vec<usize>, Box<DispValue<'a> + 'a>)> = vec![];
+		let mut cur: Box<DispValue<'a> + 'a> = root;
+		stack.push((vec![], root));
+		let startfull = start.to_vec();
+		startfull.push(0); // FIXME -1 in Nim...does it matter?
+		for (len, elem) in startfull.iter().enumerate() {
+			let children: Box<Iterator<Item=(usize, Box<DispValue<'a> + 'a>)> + 'a> = Box::new(cur.get_children(false));
+			for (idx, child) in cur.get_children(false) {
+				if idx == *elem {
+					cur = child;
+					break;
+				}
+				let mut path = start[0..len].to_vec();
+				path.push(idx);
+				stack.push((path, child));
+			}
+		}
+		iter::from_fn(move || {
+			if let Some((path, node)) = stack.pop() {
+				// ...
+				for (i, child) in node.get_children(false) {
+					let mut newpath = path;
+					newpath.push(i);
+					stack.push((newpath, child));
+				}
+				None
+			}
+			else { None }
+		})
+	}
+}*/
+
+pub struct DispInfo {
+	pub name: &'static str,
+	pub desc: &'static str,
+}
+
+pub trait DispFactory {
+	fn info(&self) -> DispInfo;
+	fn from(&self, &[&str]) -> Option<Result<Box<DispSource>>>;
 	fn colors(&self) -> Vec<curses::Color>;
+}
+
+pub trait DispSource {
+	fn root<'a>(&'a self) -> Box<DispValue<'a> + 'a>;
 }
 
 struct DispNodeCache {
@@ -132,7 +189,7 @@ impl<'a> DispNode<'a> {
 		fn parent_prefix(n: &DispNode, depth: usize, maxdepth: usize) -> String {
 			if n.parent.upgrade().is_none() || depth > maxdepth { "".to_string() }
 			else {
-				let parent = n.parent.upgrade().unwrap();
+				let parent = n.parent.upgrade().expect("Couldn't get parent node in prefix");
 				if n.last { parent_prefix(&parent.borrow(), depth + 1, maxdepth) + &repeat(" ", COLWIDTH) }
 				else { parent_prefix(&parent.borrow(), depth + 1, maxdepth) + "│" + &repeat(" ", COLWIDTH - 1) }
 			}
@@ -265,7 +322,7 @@ impl<'a> DispNode<'a> {
 			false => &self.cache.content,
 		};
 		if query != "" {
-			if self.cache.search.is_none() || self.cache.search.as_ref().unwrap().query() != *query {
+			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option").query() != *query {
 				self.cache.search = Some(fmt.search(query));
 			}
 		}
@@ -274,7 +331,9 @@ impl<'a> DispNode<'a> {
 		}
 	}
 
-	// TODO iterator search_from
+	/*fn search_from(&mut self, query: &str, forward: bool) -> SearchFrom {
+		unimplemented!();
+	}*/
 	
 	fn is_before(&self, n: Rc<RefCell<DispNode>>) -> bool {
 		let (path1, path2) = (self.path(), n.borrow().path());
@@ -285,10 +344,6 @@ impl<'a> DispNode<'a> {
 			if path1[i] < path2[i] { return true; }
 		}
 		false
-	}
-
-	fn matchlines(&self) -> Vec<usize> {
-		self.cache.search.as_ref().unwrap().matchlines()
 	}
 }
 
@@ -423,7 +478,7 @@ impl<'a> DispTree<'a> {
 			down: true,
 			query: "".to_string(),
 			searchhist: vec![],
-			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).unwrap(), // Epoch would be better
+			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"),
 			numbuf: vec![],
 			palette: palette,
 			root: root,
@@ -445,6 +500,7 @@ impl<'a> DispTree<'a> {
 
 	fn check_term_size(&self) -> bool {
 		if self.size.h < 1 || self.size.w < 24 {
+			ncurses::clear();
 			ncurses::mvaddstr(0, 0, "Terminal too small!");
 			false
 		}
@@ -484,9 +540,8 @@ impl<'a> DispTree<'a> {
 	}
 
 	fn sellines(&self) -> (usize, usize) {
-		assert!(self.offset >= 0);
-		let offset = self.offset as usize;
-		let sel = self.sel.upgrade().unwrap();
+		let offset = std::cmp::max(self.offset, 0) as usize;
+		let sel = self.sel.upgrade().expect("Couldn't get selection in sellines");
 		let lines = sel.borrow().lines();
 		match self.down {
 			false => (offset, std::cmp::min(offset + lines, self.size.h)),
@@ -512,8 +567,8 @@ impl<'a> DispTree<'a> {
 				let oldsel = self.sel.clone();
 				let newstart = self.start.seek(by, true);
 				let diff = match by {
-					i if i > 0 => self.start.dist_fwd(newstart.clone()).unwrap() as isize,
-					i if i < 0 => -(newstart.dist_fwd(self.start.clone()).unwrap() as isize),
+					i if i > 0 => self.start.dist_fwd(newstart.clone()).expect("Seek returned an incorrect node") as isize,
+					i if i < 0 => -(newstart.dist_fwd(self.start.clone()).expect("Seek returned an incorrect nodee") as isize),
 					_ => 0,
 				};
 				let dist = diff.abs() as usize;
@@ -523,14 +578,14 @@ impl<'a> DispTree<'a> {
 					while self.offset < 0 {
 						match self.down {
 							false => {
-								let sel = self.sel.upgrade().unwrap();
+								let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.offset += (sel.borrow().lines() - 1) as isize;
 								self.down = true
 							}
 							true => {
-								let sel1 = self.sel.upgrade().unwrap();
+								let sel1 = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.sel = sel1.borrow().next.clone();
-								let sel2 = self.sel.upgrade().unwrap();
+								let sel2 = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.offset += sel2.borrow().lines() as isize;
 							}
 						}
@@ -540,14 +595,14 @@ impl<'a> DispTree<'a> {
 					while self.offset >= self.size.h as isize {
 						match self.down {
 							true => {
-								let sel = self.sel.upgrade().unwrap();
+								let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.offset -= (sel.borrow().lines() - 1) as isize;
 								self.down = false;
 							}
 							false => {
-								let sel1 = self.sel.upgrade().unwrap();
+								let sel1 = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.sel = sel1.borrow().prev.clone();
-								let sel2 = self.sel.upgrade().unwrap();
+								let sel2 = self.sel.upgrade().expect("Couldn't get selection in scroll");
 								self.offset -= sel2.borrow().lines() as isize;
 							}
 						}
@@ -572,7 +627,7 @@ impl<'a> DispTree<'a> {
 	}
 
 	fn select(&mut self, sel: Rc<RefCell<DispNode<'a>>>) -> isize {
-		let oldsel = self.sel.upgrade().unwrap();
+		let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
 		match self.check_term_size() {
 			false => 0,
 			true => {
@@ -583,8 +638,10 @@ impl<'a> DispTree<'a> {
 					false => 0,
 				};
 				match down {
-					true => self.offset += DispPos::new(self.sel.clone(), curpos).dist_fwd(DispPos::new(Rc::downgrade(&sel), sel.borrow().lines() - 1)).unwrap() as isize,
-					false => self.offset -= DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::new(self.sel.clone(), curpos)).unwrap() as isize,
+					true => self.offset += DispPos::new(self.sel.clone(), curpos).dist_fwd(DispPos::new(Rc::downgrade(&sel), sel.borrow().lines() - 1))
+						.expect("Down is true but new selection not after old") as isize,
+					false => self.offset -= DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::new(self.sel.clone(), curpos))
+						.expect("Down is false but new selection not before old") as isize,
 				};
 				self.down = down;
 				self.sel = Rc::downgrade(&sel);
@@ -593,12 +650,19 @@ impl<'a> DispTree<'a> {
 				else if self.offset >= self.size.h as isize { let sd = self.offset - self.size.h as isize + 1; scrolldist = self.scroll(sd); }
 				else { self.statline(); }
 				if oldlines.0 as isize - scrolldist < self.size.h as isize && oldlines.1 as isize - scrolldist >= 0 {
-					self.drawlines((std::cmp::max(oldlines.0 as isize - scrolldist, 0) as usize, std::cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize)); // Clear the old selection
+					self.drawlines((
+						std::cmp::max(oldlines.0 as isize - scrolldist, 0) as usize,
+						std::cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize
+					)); // Clear the old selection
 				}
 				if (scrolldist.abs() as usize) < self.size.h {
 					let mut sellines = self.sellines();
-					if scrolldist > 0 { sellines = (std::cmp::min(sellines.0, self.size.h - scrolldist as usize), std::cmp::min(sellines.1, self.size.h - scrolldist as usize)); }
-					else if scrolldist < 0 { sellines = (std::cmp::max(sellines.0, -scrolldist as usize), std::cmp::max(sellines.1, -scrolldist as usize)); }
+					if scrolldist > 0 {
+						sellines = (std::cmp::min(sellines.0, self.size.h - scrolldist as usize), std::cmp::min(sellines.1, self.size.h - scrolldist as usize));
+					}
+					else if scrolldist < 0 {
+						sellines = (std::cmp::max(sellines.0, -scrolldist as usize), std::cmp::max(sellines.1, -scrolldist as usize));
+					}
 					if sellines.0 < sellines.1 { self.drawlines(sellines); }
 				}
 				scrolldist
@@ -614,15 +678,6 @@ impl<'a> DispTree<'a> {
 		}
 	}
 
-	fn refresh_offset(&mut self) {
-		let sel = self.sel.upgrade().unwrap();
-		let line = match self.down {
-			false => 0,
-			true => sel.borrow().lines() - 1,
-		};
-		self.offset = self.start.dist_fwd(DispPos::new(self.sel.clone(), line)).unwrap() as isize;
-	}
-
 	fn refresh(&self) {
 		self.drawlines((0, self.size.h));
 		self.statline();
@@ -635,49 +690,54 @@ impl<'a> DispTree<'a> {
 		if self.check_term_size() {
 			let w = self.size.w;
 			self.foreach(&|n: &mut DispNode| n.reformat(w));
-			let sel = self.sel.upgrade().unwrap();
-			self.refresh_offset();
-			self.select(sel); // TODO This causes an unnecessary redraw of the selection that we should try to avoid
+			self.start = DispPos::new(self.start.node.clone(), 0).fwd(self.start.line, true);
+			let sel = self.sel.upgrade().expect("Couldn't get selection in resize");
+			let line = match self.down {
+				false => 0,
+				true => sel.borrow().lines() - 1,
+			};
+			// If `start` is the last line of a multi-line wrapped node, but we make the terminal
+			// wider and the node unwraps to fewer lines, `sel` will now be before `start`.
+			let curpos = DispPos::new(self.sel.clone(), line);
+			self.offset = {
+				let fwd = self.start.dist_fwd(curpos.clone()).map(|x| x as isize);
+				if let Some(ret) = fwd { ret }
+				else { -(curpos.dist_fwd(self.start.clone()).expect("Could not determine new offset in resize") as isize) }
+			};
+			// TODO This `select` causes an unnecessary redraw of the selection that we should try to avoid
+			// TODO Also, if start.node == sel and sel is multi-line, then on each resize we'll
+			// jump to the top of sel, which is not terrible but perhaps not desirable
+			self.select(sel);
 			self.refresh();
 		}
 	}
 
 	fn selpos(&mut self, line: usize) {
-		let target = self.start.fwd(line, true).node.upgrade().unwrap();
+		let target = self.start.fwd(line, true).node.upgrade().expect("Tried to select invalid line");
 		self.select(target);
 	}
 
-	fn adjust_offset(&mut self, op: &Fn(&mut Rc<RefCell<DispNode>>) -> ()) {
-		let mut maxend = 0;
-		let mut sel = self.sel.upgrade().unwrap();
+	fn accordion(&mut self, op: &Fn(&mut Rc<RefCell<DispNode>>, usize) -> ()) {
+		let mut sel = self.sel.upgrade().expect("Couldn't get selection in adjust_offset");
 		let lines_before = sel.borrow().lines() as isize;
-		if sel.borrow().expanded { maxend = DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::nil()).unwrap(); }
-		op(&mut sel);
+		let mut maxend = DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::nil()).expect("Failed to find distance to end of document");
+		let w = self.size.w;
+		op(&mut sel, w);
 		let lines_after = sel.borrow().lines() as isize;
-		if sel.borrow().expanded { maxend = DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::nil()).unwrap(); }
+		maxend = std::cmp::max(maxend, DispPos::new(Rc::downgrade(&sel), 0).dist_fwd(DispPos::nil()).expect("Failed to find distance to end of document"));
 		if self.down { self.offset += lines_after - lines_before; }
 		let drawstart = match self.down {
 			true => self.offset - lines_after + 1,
 			false => self.offset,
 		};
-		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed because of the (un)expansion.
+		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed because of the (un)expansion
 		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
-	}
-
-	fn togglesel(&mut self) {
-		let w = self.size.w;
-		self.adjust_offset(&|mut sel| DispNode::toggle(&mut sel, w));
-	}
-
-	fn recursive_expand(&mut self) {
-		let w = self.size.w;
-		self.adjust_offset(&|mut sel| DispNode::recursive_expand(&mut sel, w));
 	}
 
 	fn setquery(&mut self, query: &str) {
 		self.query = query.to_string();
 		let mut redraw: HashMap<usize, DispPos> = HashMap::new();
-		let mut cur = self.start.clone().node.upgrade().unwrap();
+		let mut cur = self.start.clone().node.upgrade().expect("Couldn't get starting node in setquery");
 		let mut line = -(self.start.line as isize);
 		let onscreen = |i: isize| i >= 0 && i < self.size.h as isize;
 		while line < self.size.h as isize {
@@ -691,7 +751,7 @@ impl<'a> DispTree<'a> {
 			}
 			cur.borrow_mut().search(&self.query);
 			if self.query != "" {
-				for m in cur.borrow().cache.search.as_ref().unwrap().matchlines() { // Unwrap asserts `query` cannot be empty after calling `search()`
+				for m in cur.borrow().cache.search.as_ref().expect("Query is empty after calling search").matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
 						redraw.insert(matchline as usize, DispPos::new(Rc::downgrade(&cur), m));
@@ -712,6 +772,9 @@ impl<'a> DispTree<'a> {
 
 	fn searchnext(&mut self, offset: isize) {
 		unimplemented!("searchnext");
+		if self.query != "" && offset != 0 {
+
+		}
 	}
 
 	fn search(&mut self, forward: bool) {
@@ -733,13 +796,19 @@ impl<'a> DispTree<'a> {
 		}
 	}
 
+	fn invokesel(&mut self) {
+		let sel = self.sel.upgrade().expect("Couldn't get selection in invokesel");
+		sel.borrow().value.invoke();
+		self.refresh();
+	}
+
 	fn click(&mut self, y: usize) {
 		let now = time::Instant::now();
 		let oldsel = self.sel.clone();
 		self.selpos(y);
 		if weak_ptr_eq(&oldsel, &self.sel) && now.duration_since(self.lastclick).as_millis() < 400 {
-			self.togglesel();
-			self.lastclick = now.checked_sub(time::Duration::from_secs(60)).unwrap(); // Epoch would be better
+			self.accordion(&|mut sel, w| DispNode::toggle(&mut sel, w));
+			self.lastclick = now.checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"); // Epoch would be better
 		}
 		else { self.lastclick = now; }
 	}
@@ -748,8 +817,7 @@ impl<'a> DispTree<'a> {
 		use curses::MouseClick::*;
 		for event in events {
 			match (event.button, event.kind) {
-				(1, Click) => self.click(event.y as usize),
-				(1, DoubleClick) => self.togglesel(), // This doesn't work in my terminal; we get two separate click events
+				(1, Press) => self.click(event.y as usize),
 				(4, Press) => { self.scroll(-4); },
 				(5, Press) => { self.scroll(4); },
 				_ => (),
@@ -773,12 +841,15 @@ impl<'a> DispTree<'a> {
 	fn getnum(&self) -> usize {
 		match self.numbuf.is_empty() {
 			true => 1,
-			false => self.numbuf.iter().collect::<String>().parse::<usize>().unwrap(),
+			false => {
+				let numstr = self.numbuf.iter().collect::<String>();
+				numstr.parse::<usize>().expect(&format!("Failed to parse numbuf \"{}\" as usize", numstr))
+			},
 		}
 	}
 
 	fn seek(&self, rel: &Fn(&Rc<RefCell<DispNode<'a>>>) -> Weak<RefCell<DispNode<'a>>>) -> Rc<RefCell<DispNode<'a>>> {
-		let mut ret = self.sel.upgrade().unwrap();
+		let mut ret = self.sel.upgrade().expect("Couldn't get selection in seek");
 		for _ in 1..=self.getnum() {
 			let next = rel(&ret);
 			if let Some(newret) = next.upgrade() { ret = newret; }
@@ -790,15 +861,17 @@ impl<'a> DispTree<'a> {
 	pub fn interactive(&mut self) {
 		use curses::ncstr;
 		let digits = (0..=9).map(|x| ncstr(&x.to_string())).collect::<Vec<Vec<i32>>>();
-		let done = Arc::new(Mutex::new(false)); // TODO Don't use Arc and Mutex
+		let done = Rc::new(RefCell::new(false));
 		let d = done.clone();
 		let mut keys: Keybinder<Self> = Keybinder::new();
 
 		keys.register(&[&[ncurses::KEY_RESIZE]], Box::new(|dt, _| { dt.resize(); }));
 		keys.register(&[&[ncurses::KEY_MOUSE]], Box::new(|dt, _| dt.mouse(curses::mouseevents())));
-		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.togglesel()));
-		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.recursive_expand()));
-		keys.register(&[&ncstr("\n")], Box::new(|dt, _| { let sel = dt.sel.upgrade().unwrap(); sel.borrow().value.invoke(); dt.refresh(); }));
+		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&|mut sel, w| DispNode::toggle(&mut sel, w))));
+		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&|mut sel, w| DispNode::recursive_expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&|mut sel, w| DispNode::expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&|mut sel, w| DispNode::collapse(&mut sel))));
+		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.refresh())); // ^L
 		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<DispNode<'a>>>| n.borrow().next.clone()); dt.select(sel); }));
@@ -820,13 +893,13 @@ impl<'a> DispTree<'a> {
 		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset as isize - (dt.size.h as isize) / 2; dt.scroll(dist); }));
 		keys.register(&[&ncstr("/")], Box::new(|dt, _| { dt.search(true); }));
 		keys.register(&[&ncstr("?")], Box::new(|dt, _| { dt.search(false); }));
-		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
-		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
+		//keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
+		//keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
 		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(""); }));
-		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.lock().unwrap() = true; }));
+		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
 		self.resize();
-		while !*done.lock().unwrap() {
+		while !*done.borrow() {
 			let cmd = keys.wait(self);
 			if !digits.contains(&cmd) { self.clearnum(); }
 		}

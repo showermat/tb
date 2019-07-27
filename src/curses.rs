@@ -2,6 +2,8 @@ extern crate ncurses;
 extern crate libc;
 extern crate libc_stdhandle;
 
+// https://invisible-island.net/ncurses/man/ncurses.3x.html
+
 use self::ncurses::*;
 use self::libc_stdhandle::*;
 use std::ffi::CString;
@@ -13,15 +15,17 @@ pub fn prompt_on() {
 
 pub fn prompt_off() {
 	curs_set(CURSOR_VISIBILITY::CURSOR_INVISIBLE);
-	mousemask(ALL_MOUSE_EVENTS as u32, None);
+	mousemask((BUTTON1_PRESSED | BUTTON4_PRESSED | BUTTON5_PRESSED) as u32, None);
+	mouseinterval(0);
 }
 
 pub fn setup() { // TODO Check all the results of ncurses functions that can fail -- here and elsewhere in the code
 	//initscr();
 	unsafe {
-		let path = CString::new("/dev/tty").unwrap().into_raw();
-		let mode = CString::new("r+").unwrap().into_raw();
-		let empty = CString::new("").unwrap().into_raw();
+		let cstr = |s: &str| { CString::new(s).expect("Tried to create null C string").into_raw() };
+		let path = cstr("/dev/tty");
+		let mode = cstr("r+");
+		let empty = cstr("");
 		libc::setlocale(libc::LC_ALL, empty);
 		let tty = libc::fopen(path, mode);
 		let _ = CString::from_raw(path);
@@ -42,6 +46,42 @@ pub fn setup() { // TODO Check all the results of ncurses functions that can fai
 
 pub fn cleanup() {
 	endwin();
+}
+
+pub enum Key {
+	Timeout,
+	Invalid,
+	Char(char),
+	Special(i32),
+}
+
+pub fn read(timeout: i32) -> Key { // Read a UTF-8 char from input
+	ncurses::timeout(timeout);
+	let ret = match ncurses::getch() {
+		ncurses::ERR => Key::Timeout,
+		key if key < 128 => Key::Char(key as u8 as char),
+		key if key >= 256 => Key::Special(key),
+		key => {
+			let k = key as u8;
+			let mut utf_input = vec![k];
+			let charlen =
+				if k & 0xf8 == 0xf0 { 3 }
+				else if k & 0xf0 == 0xe0 { 2 }
+				else if k & 0xe0 == 0xc0 { 1 }
+				else { 0 };
+			for _ in 0..charlen { utf_input.push(ncurses::getch() as u8); }
+			let utfstr = String::from_utf8(utf_input);
+			if let Ok(utf) = utfstr {
+				if utf.chars().count() == 1 {
+					Key::Char(utf.chars().next().expect("Could not pull from non-empty iterator"))
+				}
+				else { Key::Invalid }
+			}
+			else { Key::Invalid }
+		}
+	};
+	ncurses::timeout(-1);
+	ret
 }
 
 pub fn ncstr(s: &str) -> Vec<i32> {
@@ -180,4 +220,3 @@ impl Output {
 		});
 	}
 }
-
