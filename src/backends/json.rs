@@ -1,8 +1,8 @@
-use ::errors::*;
-use ::disptree::{DispFactory, DispSource, DispValue, DispInfo};
 use ::format::FmtCmd;
 use ::curses::Color;
-use ::serde_json::{from_reader, Value};
+use ::serde_json::{from_reader, Value as V};
+use ::interface::*;
+use ::errors::*;
 
 const HI_STR: usize = 0;
 const HI_KWD: usize = 1;
@@ -19,7 +19,7 @@ enum ParentType {
 #[derive(Debug)]
 pub struct JsonValue<'a> {
 	key: String,
-	value: &'a Value,
+	value: &'a V,
 	parent: ParentType,
 }
 
@@ -49,17 +49,17 @@ impl<'a> JsonValue<'a> {
 	}
 	fn fmtval(&self) -> FmtCmd {
 		match self.value {
-			Value::String(s) => FmtCmd::color(HI_STR, Self::fmtstr(s)),
-			Value::Number(n) => FmtCmd::color(HI_KWD, FmtCmd::lit(&n.to_string())),
-			Value::Bool(b) => FmtCmd::color(HI_KWD, FmtCmd::lit(if *b { "true" } else { "false" })),
-			Value::Object(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "{ }" } else { "{...}" }))),
-			Value::Array(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
-			Value::Null => FmtCmd::color(HI_KWD, FmtCmd::lit("null")),
+			V::String(s) => FmtCmd::color(HI_STR, Self::fmtstr(s)),
+			V::Number(n) => FmtCmd::color(HI_KWD, FmtCmd::lit(&n.to_string())),
+			V::Bool(b) => FmtCmd::color(HI_KWD, FmtCmd::lit(if *b { "true" } else { "false" })),
+			V::Object(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "{ }" } else { "{...}" }))),
+			V::Array(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
+			V::Null => FmtCmd::color(HI_KWD, FmtCmd::lit("null")),
 		}
 	}
 }
 
-impl<'a> DispValue<'a> for JsonValue<'a> {
+impl<'a> Value<'a> for JsonValue<'a> {
 	fn placeholder(&self) -> FmtCmd {
 		self.fmtkey()
 	}
@@ -71,16 +71,16 @@ impl<'a> DispValue<'a> for JsonValue<'a> {
 	}
 	fn expandable(&self) -> bool {
 		match *self.value {
-			Value::Array(_) | Value::Object(_) => true,
+			V::Array(_) | V::Object(_) => true,
 			_ => false,
 		}
 	}
-	fn children(&self) -> Vec<Box<DispValue<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
 		match self.value {
-			Value::Array(items) =>
-				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, parent: ParentType::Array }) as Box<DispValue>).collect(),
-			Value::Object(items) =>
-				items.iter().map(|(k, v)| Box::new(JsonValue { key: k.to_string(), value: &v, parent: ParentType::Object }) as Box<DispValue>).collect(),
+			V::Array(items) =>
+				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, parent: ParentType::Array }) as Box<Value>).collect(),
+			V::Object(items) =>
+				items.iter().map(|(k, v)| Box::new(JsonValue { key: k.to_string(), value: &v, parent: ParentType::Object }) as Box<Value>).collect(),
 			_ => vec![],
 		}
 	}
@@ -88,28 +88,28 @@ impl<'a> DispValue<'a> for JsonValue<'a> {
 }
 
 pub struct JsonSource {
-	json: Value,
+	json: V,
 }
 
 impl JsonSource {
-	pub fn read<T: std::io::Read>(input: T) -> Result<Box<DispSource>> {
+	pub fn read<T: std::io::Read>(input: T) -> Result<Box<Source>> {
 		Ok(Box::new(Self { json: from_reader(input).chain_err(|| "could not parse input as JSON")? }))
 	}
 }
 
-impl DispSource for JsonSource {
-	fn root<'a>(&'a self) -> Box<DispValue<'a> + 'a> {
+impl Source for JsonSource {
+	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
 		Box::new(JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root })
 	}
 }
 
 pub struct JsonFactory { }
 
-impl DispFactory for JsonFactory {
-	fn info(&self) -> DispInfo {
-		DispInfo { name: "j", desc: "Browse JSON documents" }
+impl Factory for JsonFactory {
+	fn info(&self) -> Info {
+		Info { name: "j", desc: "Browse JSON documents" }
 	}
-	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<DispSource>>> {
+	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
 		match args.get(0).cloned() { // TODO Why is the `cloned` here necessary?
 			Some("-h") | Some("--help") => {
 				print!(r#"jb: Browse JSON documents interactively
@@ -137,6 +137,6 @@ provide no arguments to read from standard input.
 	}
 }
 
-pub fn get_factory() -> Box<DispFactory> {
+pub fn get_factory() -> Box<Factory> {
 	Box::new(JsonFactory { })
 }

@@ -7,16 +7,16 @@ mod errors {
 	error_chain! { }
 }
 
-mod format;
-mod disptree;
+mod interface;
+mod display;
 mod keybinder;
 mod curses;
 mod prompt;
-mod jsonvalue;
-mod fsvalue;
+mod backends;
+mod format;
 
 use errors::*;
-use disptree::*;
+use interface::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -61,10 +61,10 @@ impl BackendSource {
 	}
 }
 
-type BackendMap = HashMap<String, (Box<DispFactory>, BackendSource)>;
+type BackendMap = HashMap<String, (Box<Factory>, BackendSource)>;
 
 fn info_exit(backends: BackendMap) {
-	let mut sorted = backends.into_iter().collect::<Vec<(String, (Box<DispFactory>, BackendSource))>>();
+	let mut sorted = backends.into_iter().collect::<Vec<(String, (Box<Factory>, BackendSource))>>();
 	sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).expect("Strings were not partially ordered"));
 	let backend_fmt = sorted.into_iter().map(|(_, (v, src))| {
 		let info = v.info();
@@ -84,8 +84,8 @@ Available backends:
 
 fn run() -> Result<()> {
 	let backends: BackendMap = vec![
-		jsonvalue::get_factory(),
-		fsvalue::get_factory(),
+		backends::json::get_factory(),
+		backends::fs::get_factory(),
 	].into_iter().map(|x| (x.info().name.to_string(), (x, BackendSource::Builtin))).collect();
 
 	let backend_re = regex::Regex::new("^([a-z]+)b$").chain_err(|| "Invalid regular expression given for backend extraction")?;
@@ -119,7 +119,7 @@ fn run() -> Result<()> {
 	if let Some(treeres) = factory.from(subargs) {
 		let tree = treeres?;
 		curses::setup();
-		let mut dt = DispTree::new(tree.root(), factory.colors());
+		let mut dt = display::Tree::new(tree.root(), factory.colors());
 		dt.interactive();
 		curses::cleanup();
 	};

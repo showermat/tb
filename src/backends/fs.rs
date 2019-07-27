@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::path::{PathBuf, Path};
 use std::ffi::{OsStr, OsString};
-use ::disptree::{DispFactory, DispSource, DispValue, DispInfo};
 use ::format::FmtCmd;
 use ::curses::Color;
+use ::interface::*;
 use ::errors::*;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -35,8 +35,8 @@ impl FsValue {
 			(Kind::Meta, 244, 7),
 		].into_iter().map(|(t, c256, c8)| (*t, Color { c8: *c8, c256: *c256 })).collect()
 	}
-	fn metavalue<'a>(msg: &str) -> Box<DispValue<'a> + 'a> {
-		Box::new(FsValue { name: format!("({})", msg), path: PathBuf::new(), kind: Kind::Meta }) as Box<DispValue<'a> + 'a>
+	fn metavalue<'a>(msg: &str) -> Box<Value<'a> + 'a> {
+		Box::new(FsValue { name: format!("({})", msg), path: PathBuf::new(), kind: Kind::Meta }) as Box<Value<'a> + 'a>
 	}
 	fn new(path: &Path) -> Self {
 		let name = match path.file_name () {
@@ -64,7 +64,7 @@ impl FsValue {
 	}
 }
 
-impl<'a> DispValue<'a> for FsValue {
+impl<'a> Value<'a> for FsValue {
 	fn placeholder(&self) -> FmtCmd {
 		self.value()
 	}
@@ -77,7 +77,7 @@ impl<'a> DispValue<'a> for FsValue {
 			_ => false,
 		}
 	}
-	fn children(&self) -> Vec<Box<DispValue<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
 		assert!(self.kind == Kind::Dir || self.kind == Kind::DirLink);
 		match std::fs::read_dir(&self.path) {
 			Ok(entries) => {
@@ -96,7 +96,7 @@ impl<'a> DispValue<'a> for FsValue {
 								Ok(f) => Box::new(FsValue::new(&f.path())),
 								Err(_) => Self::metavalue("inaccessible"),
 							}
-						}).collect::<Vec<Box<DispValue<'a> + 'a>>>()
+						}).collect::<Vec<Box<Value<'a> + 'a>>>()
 					}
 				}
 			},
@@ -117,26 +117,26 @@ pub struct FsSource {
 	root: PathBuf,
 }
 
-impl DispSource for FsSource {
-	fn root<'a>(&'a self) -> Box<DispValue<'a> + 'a> {
+impl Source for FsSource {
+	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
 		Box::new(FsValue::new(&self.root))
 	}
 }
 
 pub struct FsFactory { }
 
-impl DispFactory for FsFactory {
-	fn info(&self) -> DispInfo {
-		DispInfo { name: "fs", desc: "Browse the file system" }
+impl Factory for FsFactory {
+	fn info(&self) -> Info {
+		Info { name: "fs", desc: "Browse the file system" }
 	}
-	fn from(&self, args: &[&str]) -> Option<Result<Box<DispSource>>> {
+	fn from(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
 		if args.len() == 1 && ["-h", "--help"].contains(&args[0]) {
 			println!("fsb: Browse the file system interactively");
 			None
 		}
 		else {
 			let root = PathBuf::from(args.get(0).cloned().unwrap_or(".")).canonicalize().chain_err(|| "Couldn't read requested path");
-			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<DispSource>))
+			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<Source>))
 		}
 	}
 	fn colors(&self) -> Vec<Color> {
@@ -144,6 +144,6 @@ impl DispFactory for FsFactory {
 	}
 }
 
-pub fn get_factory() -> Box<DispFactory> {
+pub fn get_factory() -> Box<Factory> {
 	Box::new(FsFactory { })
 }
