@@ -20,7 +20,6 @@ pub fn prompt_off() {
 }
 
 pub fn setup() { // TODO Check all the results of ncurses functions that can fail -- here and elsewhere in the code
-	//initscr();
 	unsafe {
 		let cstr = |s: &str| { CString::new(s).expect("Tried to create null C string").into_raw() };
 		let path = cstr("/dev/tty");
@@ -42,6 +41,7 @@ pub fn setup() { // TODO Check all the results of ncurses functions that can fai
 	scrollok(stdscr(), true);
 	leaveok(stdscr(), false);
 	prompt_off();
+	set_escdelay(100);
 }
 
 pub fn cleanup() {

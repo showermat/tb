@@ -11,6 +11,7 @@ fn weak_ptr_eq<T>(a: &Weak<T>, b: &Weak<T>) -> bool { // Shim for Weak::ptr_eq h
 	}
 }
 
+mod value;
 mod node;
 mod pos;
 mod tree;

@@ -8,7 +8,7 @@ use ::regex::Regex;
 const TABWIDTH: usize = 4;
 
 pub struct Search {
-	query: String,
+	query: Option<Regex>,
 	matches: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>>, // line, item, start, end // TODO Consider BTreeMap<(usize, usize), BTreeSet<(usize, usize)>> or similar
 }
 
@@ -16,7 +16,7 @@ impl Search {
 	pub fn matchlines(&self) -> Vec<usize> {
 		self.matches.iter().map(|(k, _)| *k).collect::<Vec<usize>>()
 	}
-	pub fn query(&self) -> String {
+	pub fn query(&self) -> Option<Regex> {
 		self.query.clone()
 	}
 }
@@ -91,7 +91,7 @@ impl Preformatted {
 		let delta = idx - k.1;
 		(v.0, v.1, v.2 + delta)
 	}
-	pub fn search(&self, query: &str) -> Search {
+	pub fn search(&self, query: &Regex) -> Search {
 		let matchmap = match self.mapping.is_empty() {
 			true => BTreeMap::new(), // No searchable content in this node, so no matches possible
 			false => {
@@ -100,10 +100,9 @@ impl Preformatted {
 					chunk.match_indices(query).map(|res| (self.translate(i, res.0), self.translate(i, res.0 + res.1.chars().count())))
 				}).peekable();*/
 				// The below is a standin until I get the above to work
-				let regex = Regex::new(query).unwrap_or(Regex::new(&regex::escape(query)).expect("Regex construction failed even after escaping"));
 				let mut matchvec = vec![];
 				for (i, chunk) in self.raw.iter().enumerate() {
-					for res in regex.find_iter(chunk) {
+					for res in query.find_iter(chunk) {
 						matchvec.push((self.translate(i, res.start()), self.translate(i, res.end())));
 					}
 				}
@@ -161,7 +160,7 @@ impl Preformatted {
 			},
 		};
 
-		Search { query: query.to_string(), matches: matchmap }
+		Search { query: Some(query.clone()), matches: matchmap }
 	}
 }
 
@@ -183,7 +182,7 @@ impl FmtCmd {
 
 	fn internal_format(output: &mut Preformatted, content: &FmtCmd, startcol: usize, color: usize, color_offset: usize, record: bool) -> usize {
 		let addchar = |target: &mut Vec<Output>, c: char| {
-			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; } // FIXME Using early return to avoid borrow-checker issues with an if-else representation
+			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; } // TODO Using early return to avoid borrow-checker issues with an if-else representation
 			target.push(Output::Str(c.to_string()));
 		};
 		let append = |target: &mut Vec<Vec<Output>>, mut content: Vec<Vec<Output>>| {
@@ -234,7 +233,7 @@ impl FmtCmd {
 							if output.width > 0 && cnt >= output.width - TABWIDTH {
 								newline(output, &mut cur, &mut cnt, &mut need_mapping);
 							}
-							cur.push(Output::Str(std::iter::repeat(" ").take(TABWIDTH).collect::<String>())); // TODO What if width < 4?
+							cur.push(Output::Str(std::iter::repeat(" ").take(TABWIDTH).collect::<String>())); // FIXME What if width < 4?
 							cnt += TABWIDTH;
 							need_mapping = true;
 						},
@@ -315,6 +314,9 @@ impl FmtCmd {
 				}
 			},
 			FmtCmd::Exclude(child) => {
+				if output.raw.last() != Some(&"".to_string()) {
+					output.raw.push("".to_string());
+				}
 				Self::internal_format(output, child, startcol, color, color_offset, false)
 			},
 		}
@@ -323,6 +325,9 @@ impl FmtCmd {
 	pub fn format(&self, width: usize, color_offset: usize) -> Preformatted {
 		let mut ret = Preformatted::new(width);
 		Self::internal_format(&mut ret, self, 0, 0 /* FIXME */, color_offset, true);
+		if ret.raw.last() == Some(&"".to_string()) { // Ick.  This is necessary because searching for anchors (^ and $) causes a panic if we leave empty strings in the raw
+			ret.raw.pop();
+		}
 		/*eprintln!("RAW");
 		ret.raw.iter().enumerate().for_each(|(i, x)| eprintln!("\t{}: {:?}", i, x));
 		eprintln!("CONTENT");
@@ -339,12 +344,12 @@ impl FmtCmd {
 		ret
 	}
 
-	pub fn contains(&self, q: &str) -> bool { // Search a value without having to preformat it
+	pub fn contains(&self, query: &Regex) -> bool { // Search a value without having to preformat it
 		match self {
-			FmtCmd::Literal(value) => value.contains(q),
-			FmtCmd::Container(children) => children.iter().any(|x| x.contains(q)),
-			FmtCmd::Color(_, child) => child.contains(q),
-			FmtCmd::NoBreak(child) => child.contains(q),
+			FmtCmd::Literal(value) => query.is_match(value),
+			FmtCmd::Container(children) => children.iter().any(|x| x.contains(query)),
+			FmtCmd::Color(_, child) => child.contains(query),
+			FmtCmd::NoBreak(child) => child.contains(query),
 			FmtCmd::Exclude(_) => false,
 		}
 	}

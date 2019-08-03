@@ -22,10 +22,12 @@ use std::path::PathBuf;
 
 /*
  * TODO:
- *     TODOs, FIXMEs
+ *     Searches with fs backend are very slow and peg a core.  Figure out and eliminate the bottleneck.
+ *     Don't assume that every call to backend `children()` returns the same list -- make a derpy test backend that gives random results to test how well this works
+ *         Add a child cache to display::Value and use it for all child requests.  Also add a refresh() function and find strategic places to call it from the displaytree.  (Also add keybinding 'r' to explicitly refresh.)
+ *     TODOs, FIXMEs, release cleanup
  * Future:
- *     Pluggable backends https://michael-f-bryan.github.io/rust-ffi-guide/dynamic_loading.html https://github.com/Zaerei/rust_plugin_playground
- *         Reddit, Hacker News https://hacker-news.firebaseio.com/v0/item/18918215.json https://hacker-news.firebaseio.com/v0/topstories.json
+ *     Fun example backends: Reddit, Hacker News https://hacker-news.firebaseio.com/v0/item/18918215.json https://hacker-news.firebaseio.com/v0/topstories.json
  *     Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend regex
  *     jq integration: https://crates.io/crates/json-query
  * Ideas:
@@ -103,6 +105,9 @@ fn run() -> Result<()> {
 				if args.len() == 1 || ["help", "-h", "--help"].contains(&args[1]) {
 					info_exit(backends);
 					unreachable!();
+				}
+				else if args[1] == "config" {
+					unimplemented!(); // TODO
 				}
 				else {
 					(args[1].to_string(), &args[2..])

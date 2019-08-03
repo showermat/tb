@@ -116,6 +116,9 @@ impl Factory for JsonFactory {
 
 Provide the name of the input file to read as the sole command-line argument, or
 provide no arguments to read from standard input.
+
+Part of Tree Browser <https://github.com/showermat/tb>
+Copyright (GPLv3) 2019 Matthew Schauer
 "#);
 				None
 			},

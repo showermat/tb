@@ -1,8 +1,10 @@
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
+use ::regex::Regex;
 use ::format::{Preformatted, Search};
-use ::interface::Value;
 use ::curses;
+use super::value::Value;
+use ::interface::Value as BackendValue;
 use super::weak_ptr_eq;
 use super::COLWIDTH;
 
@@ -21,10 +23,9 @@ pub struct Node<'a> {
 	pub next: Weak<RefCell<Node<'a>>>,
 	pub prevsib: Weak<RefCell<Node<'a>>>,
 	pub nextsib: Weak<RefCell<Node<'a>>>,
-	pub index: usize,
 	pub expanded: bool,
 	last: bool,
-	pub value: Box<Value<'a> + 'a>,
+	value: Rc<RefCell<Value<'a>>>,
 	cache: NodeCache,
 }
 
@@ -43,16 +44,17 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn path(&self) -> Vec<usize> {
-		match self.parent.upgrade() {
-			None => vec![],
-			Some(p) => {
-				let mut ret = p.borrow().path();
-				ret.push(self.index);
-				ret
-			},
+	/*pub fn getpath(this: &Rc<RefCell<Node<'a>>>, path: &[usize]) -> Option<Rc<RefCell<Node<'a>>>> {
+		match path {
+			[] => Some(this.clone()),
+			path => {
+				match this.borrow().children.get(path[0]) {
+					None => None,
+					Some(child) => Self::getpath(child, &path[1..])
+				}
+			}
 		}
-	}
+	}*/
 
 	/* Things I dislike about Rust:
 	 * Mein Gott!  This is an incredibly nasty syntax for doing a simple tree insertion.  In Java,
@@ -121,11 +123,11 @@ impl<'a> Node<'a> {
 		self.cache.prefix0 = self.prefix(maxdepth, true);
 		self.cache.prefix1 = self.prefix(maxdepth, false);
 		let contentw = screenwidth - ((maxdepth + 1) * COLWIDTH) % screenwidth;
-		self.cache.content = self.value.content().format(contentw, super::RESERVED_FG_COLORS);
-		self.cache.placeholder = self.value.placeholder().format(contentw, super::RESERVED_FG_COLORS);
+		self.cache.content = self.value.borrow().v.content().format(contentw, super::RESERVED_FG_COLORS);
+		self.cache.placeholder = self.value.borrow().v.placeholder().format(contentw, super::RESERVED_FG_COLORS);
 	}
 
-	fn new(parent: Weak<RefCell<Node<'a>>>, val: Box<Value<'a> + 'a>, width: usize, index: usize, last: bool) -> Self {
+	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, index: usize, last: bool) -> Self {
 		let mut ret = Node {
 			children: vec![],
 			parent: parent,
@@ -133,7 +135,6 @@ impl<'a> Node<'a> {
 			next: Weak::new(),
 			prevsib: Weak::new(),
 			nextsib: Weak::new(),
-			index: index,
 			expanded: false,
 			last: last,
 			value: val,
@@ -149,20 +150,20 @@ impl<'a> Node<'a> {
 		ret
 	}
 
-	pub fn new_root(val: Box<Value<'a> + 'a>, width: usize) -> Self {
-		Self::new(Weak::new(), val, width, 0, true)
+	pub fn new_root(val: Box<BackendValue<'a> + 'a>, width: usize) -> Self {
+		Self::new(Weak::new(), Value::new_root(val), width, 0, true)
 	}
 
 	pub fn expandable(&self) -> bool {
-		self.value.expandable()
+		self.value.borrow().v.expandable()
 	}
 
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() && !this.borrow().expanded {
-			if this.borrow().value.children().len() > 0 {
+			if Value::children(&this.borrow().value).len() > 0 {
 				let mut cur = this.clone();
-				let lastidx = this.borrow().value.children().len() - 1;
-				let children = this.borrow().value.children();
+				let lastidx = Value::children(&this.borrow().value).len() - 1;
+				let children = Value::children(&this.borrow().value);
 				for (i, child) in children.into_iter().enumerate() {
 					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i, i == lastidx)));
 					this.borrow_mut().children.push(node.clone());
@@ -222,14 +223,14 @@ impl<'a> Node<'a> {
 		};
 	}
 
-	pub fn search(&mut self, query: &str) {
+	pub fn search(&mut self, query: &Option<Regex>) {
 		let fmt = match self.expanded {
 			true => &self.cache.placeholder,
 			false => &self.cache.content,
 		};
-		if query != "" {
-			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option").query() != *query {
-				self.cache.search = Some(fmt.search(query));
+		if let Some(q) = query {
+			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option").query().map(|x| x.as_str().to_string()) != Some(q.as_str().to_string()) {
+				self.cache.search = Some(fmt.search(q));
 			}
 		}
 		else if self.cache.search.is_some() {
@@ -241,12 +242,16 @@ impl<'a> Node<'a> {
 		&self.cache.search
 	}
 
-	/*fn search_from(&mut self, query: &str, forward: bool) -> SearchFrom {
-		unimplemented!();
-	}*/
+	pub fn searchfrom(&self, query: &Regex, offset: isize) -> Vec<usize> {
+		// TODO For offset > 1 (or 10, or 100), it's probably worth first checking the number of
+		// occurrences of the query in the document, then modding offset by that.
+		(0..offset.abs()).fold(self.value.clone(), |val, _| {
+			Value::searchfrom(&val, query, offset > 0).unwrap_or(val)
+		}).borrow().path()
+	}
 	
 	pub fn is_before(&self, n: Rc<RefCell<Node>>) -> bool {
-		let (path1, path2) = (self.path(), n.borrow().path());
+		let (path1, path2) = (self.value.borrow().path(), n.borrow().value.borrow().path());
 		for i in 0..=std::cmp::max(path1.len(), path2.len()) {
 			if path2.len() <= i { return false; }
 			if path1.len() <= i { return true; }
@@ -255,11 +260,15 @@ impl<'a> Node<'a> {
 		}
 		false
 	}
+
+	pub fn invoke(&self) {
+		self.value.borrow().v.invoke();
+	}
 }
 
 impl<'a> std::fmt::Debug for Node<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		let content = self.value.content().format(0, super::RESERVED_FG_COLORS).raw();
+		let content = self.value.borrow().v.content().format(0, super::RESERVED_FG_COLORS).raw();
 		write!(f, "Node({})", content)
 	}
 }

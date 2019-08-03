@@ -2,6 +2,7 @@ use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use std::time;
 use std::collections::HashMap;
+use ::regex::Regex;
 use ::curses;
 use ::interface::Value;
 use ::keybinder::Keybinder;
@@ -16,8 +17,9 @@ pub struct Tree<'a> {
 	start: Pos<'a>,
 	offset: isize,
 	down: bool,
-	query: String,
+	query: Option<Regex>,
 	searchhist: Vec<String>,
+	searchfwd: bool,
 	lastclick: time::Instant,
 	numbuf: Vec<char>,
 	palette: curses::Palette,
@@ -45,8 +47,9 @@ impl<'a> Tree<'a> {
 			start: Pos::new(Rc::downgrade(&root), 0),
 			offset: 0,
 			down: true,
-			query: "".to_string(),
+			query: None,
 			searchhist: vec![],
+			searchfwd: true,
 			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"),
 			numbuf: vec![],
 			palette: palette,
@@ -303,8 +306,15 @@ impl<'a> Tree<'a> {
 		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
 	}
 
-	fn setquery(&mut self, query: &str) {
-		self.query = query.to_string();
+	fn query_from_str(query: &str) -> Option<Regex> {
+		match query {
+			"" => None,
+			q => Some(Regex::new(q).unwrap_or(Regex::new(&regex::escape(q)).expect("Regex construction failed even after escaping"))),
+		}
+	}
+
+	fn setquery(&mut self, query: Option<Regex>) {
+		self.query = query;
 		let mut redraw: HashMap<usize, Pos> = HashMap::new();
 		let mut cur = self.start.clone().node.upgrade().expect("Couldn't get starting node in setquery");
 		let mut line = -(self.start.line as isize);
@@ -319,7 +329,7 @@ impl<'a> Tree<'a> {
 				}
 			}
 			cur.borrow_mut().search(&self.query);
-			if self.query != "" {
+			if self.query.is_some() {
 				for m in cur.borrow().getsearch().as_ref().expect("Query is empty after calling search").matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
@@ -340,34 +350,65 @@ impl<'a> Tree<'a> {
 	}
 
 	fn searchnext(&mut self, offset: isize) {
-		unimplemented!("searchnext");
-		if self.query != "" && offset != 0 {
-
+		if let Some(q) = &self.query {
+			let sel = self.sel.upgrade().expect("Couldn't get selection in searchnext");
+			let path = sel.borrow().searchfrom(q, offset * (if self.searchfwd { 1 } else { -1 }));
+			let mut n = self.root.clone();
+			let mut firstline: Option<isize> = None;
+			for i in path {
+				if n.borrow().expandable() && !n.borrow().expanded {
+					let nextsib_pos = Pos::new(n.borrow().nextsib.clone(), 0);
+					if firstline.is_none() {
+						firstline = self.start.dist_fwd(nextsib_pos.clone()).map(|x| x as isize - 1);
+					}
+					Node::expand(&mut n, self.size.w);
+					if n.borrow().is_before(sel.clone()) {
+						if !n.borrow().is_before(self.start.node.upgrade().expect("Tree has invalid start position")) {
+							let newlines = Pos::new(Rc::downgrade(&n), 0).dist_fwd(nextsib_pos.clone()).expect("Expanding node has no next sibling") - 1; // TODO Not entirely sure this should be an error
+							self.offset += newlines as isize;
+						}
+					}
+				}
+				let target = n.borrow().children[i].clone();
+				n = target;
+			}
+			let mut lastline = std::cmp::min(self.start.dist_fwd(Pos::nil()).expect("Couldn't find distance from start to end"), self.size.h) as isize;
+			let scrolldist = self.select(n);
+			if let Some(mut first) = firstline {
+				if (scrolldist.abs() as usize) < self.size.h {
+					first -= scrolldist;
+					lastline -= scrolldist;
+					if first < self.size.h as isize && lastline >= 0 {
+						self.drawlines((std::cmp::max(first, 0) as usize, std::cmp::min(lastline as usize, self.size.h)));
+					}
+				}
+			}
 		}
 	}
 
 	fn search(&mut self, forward: bool) {
 		if self.check_term_size() {
 			let oldquery = self.query.clone();
-			self.setquery("");
-			let incsearch = Box::new(|dt: &mut Tree, q: &str| dt.setquery(q));
+			self.setquery(None);
+			let incsearch = Box::new(|dt: &mut Tree, q: &str| dt.setquery(Self::query_from_str(q)));
 			let size = self.size; // For borrowing
 			let palette = self.palette.clone();
 			let searchhist = self.searchhist.clone(); // Any way to avoid these expensive clones?
 			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, if forward { "/" } else { "?" }, "", searchhist, incsearch, &palette);
 			if res == "" {
-				self.setquery(&oldquery);
+				self.setquery(oldquery);
 			}
 			else {
 				self.searchhist.push(res);
-				//self.searchnext(if forward { 1 } else { -1 });
+				self.searchfwd = forward;
+				self.searchnext(1);
 			}
 		}
 	}
 
 	fn invokesel(&mut self) {
 		let sel = self.sel.upgrade().expect("Couldn't get selection in invokesel");
-		sel.borrow().value.invoke();
+		sel.borrow().invoke();
 		self.refresh();
 	}
 
@@ -462,9 +503,9 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset as isize - (dt.size.h as isize) / 2; dt.scroll(dist); }));
 		keys.register(&[&ncstr("/")], Box::new(|dt, _| { dt.search(true); }));
 		keys.register(&[&ncstr("?")], Box::new(|dt, _| { dt.search(false); }));
-		//keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
-		//keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
-		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(""); }));
+		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
+		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
+		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
 		self.resize();
