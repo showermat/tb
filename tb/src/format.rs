@@ -174,12 +174,6 @@ pub enum FmtCmd {
 }
 
 impl FmtCmd {
-	pub fn lit(s: &str) -> Self { FmtCmd::Literal(s.to_string()) }
-	pub fn cat(children: Vec<Self>) -> Self { FmtCmd::Container(children) }
-	pub fn color(c: usize, child: Self) -> Self { FmtCmd::Color(c, Box::new(child)) }
-	pub fn nobreak(child: Self) -> Self { FmtCmd::NoBreak(Box::new(child)) }
-	pub fn exclude(child: Self) -> Self { FmtCmd::Exclude(Box::new(child)) }
-
 	fn internal_format(output: &mut Preformatted, content: &FmtCmd, startcol: usize, color: usize, color_offset: usize, record: bool) -> usize {
 		let addchar = |target: &mut Vec<Output>, c: char| {
 			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; } // TODO Using early return to avoid borrow-checker issues with an if-else representation

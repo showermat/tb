@@ -1,13 +1,6 @@
-[package]
-name = "tb"
-version = "0.4.0"
-authors = ["Matthew Schauer <matthew.schauer@e10x.net>"]
-
-[dependencies]
-error-chain = "0.11"
-serde_json = "1.0"
-ncurses = "5.91"
-libc = "0.2"
-libc-stdhandle = "0.1.0"
-wcwidth = "1.0.1"
-regex = "1"
+[workspace]
+members = [
+	"tb-interface",
+	"tb",
+	"tb-sample-plugins",
+]

@@ -4,7 +4,7 @@ use std::time;
 use std::collections::HashMap;
 use ::regex::Regex;
 use ::curses;
-use ::interface::Value;
+use ::interface::{Value, Color};
 use ::keybinder::Keybinder;
 use super::node::Node;
 use super::pos::Pos;
@@ -26,18 +26,18 @@ pub struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<curses::Color>) -> Self {
+	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<Color>) -> Self {
 		let size = curses::scrsize();
 		let mut root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
 		let mut fgcol = vec![ // RESERVED_FG_COLORS always needs to reflect this
-			curses::Color { c8: 7, c256: 7 }, // regular
-			curses::Color { c8: 4, c256: 244 }, // muted
+			Color { c8: 7, c256: 7 }, // regular
+			Color { c8: 4, c256: 244 }, // muted
 		];
 		fgcol.extend(colors);
 		let bgcol = vec![
-			curses::Color { c8: 0, c256: 0 }, // regular
-			curses::Color { c8: 7, c256: 237 }, // selected
-			curses::Color { c8: 3, c256: 88 }, // highlighted
+			Color { c8: 0, c256: 0 }, // regular
+			Color { c8: 7, c256: 237 }, // selected
+			Color { c8: 3, c256: 88 }, // highlighted
 		];
 		let palette = curses::Palette::new(fgcol, bgcol);
 		Node::toggle(&mut root, size.w);
@@ -50,7 +50,7 @@ impl<'a> Tree<'a> {
 			query: None,
 			searchhist: vec![],
 			searchfwd: true,
-			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"),
+			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).expect("This program cannot be run before January 2, 1970"),
 			numbuf: vec![],
 			palette: palette,
 			root: root,
@@ -199,10 +199,10 @@ impl<'a> Tree<'a> {
 	}
 
 	fn select(&mut self, sel: Rc<RefCell<Node<'a>>>) -> isize {
-		let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
 		match self.check_term_size() {
 			false => 0,
 			true => {
+				let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
 				let down = oldsel.borrow().is_before(sel.clone());
 				let oldlines = self.sellines();
 				let curpos = match self.down {
@@ -250,7 +250,8 @@ impl<'a> Tree<'a> {
 		}
 	}
 
-	fn refresh(&self) {
+	fn redraw(&self) {
+		ncurses::clear();
 		self.drawlines((0, self.size.h));
 		self.statline();
 	}
@@ -280,7 +281,7 @@ impl<'a> Tree<'a> {
 			// TODO Also, if start.node == sel and sel is multi-line, then on each resize we'll
 			// jump to the top of sel, which is not terrible but perhaps not desirable
 			self.select(sel);
-			self.refresh();
+			self.redraw();
 		}
 	}
 
@@ -290,7 +291,7 @@ impl<'a> Tree<'a> {
 	}
 
 	fn accordion(&mut self, op: &Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
-		let mut sel = self.sel.upgrade().expect("Couldn't get selection in adjust_offset");
+		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
 		let lines_before = sel.borrow().lines() as isize;
 		let mut maxend = Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
 		let w = self.size.w;
@@ -302,8 +303,15 @@ impl<'a> Tree<'a> {
 			true => self.offset - lines_after + 1,
 			false => self.offset,
 		};
-		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed because of the (un)expansion
+		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
 		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
+	}
+
+	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
+		// We can try doing fancier things down the line, but for now select the node being
+		// refreshed to avoid dealing with a selection that no longer exists
+		self.select(node.clone());
+		self.accordion(&|node, w| Node::refresh(node, w));
 	}
 
 	fn query_from_str(query: &str) -> Option<Regex> {
@@ -315,7 +323,7 @@ impl<'a> Tree<'a> {
 
 	fn setquery(&mut self, query: Option<Regex>) {
 		self.query = query;
-		let mut redraw: HashMap<usize, Pos> = HashMap::new();
+		let mut to_redraw: HashMap<usize, Pos> = HashMap::new();
 		let mut cur = self.start.clone().node.upgrade().expect("Couldn't get starting node in setquery");
 		let mut line = -(self.start.line as isize);
 		let onscreen = |i: isize| i >= 0 && i < self.size.h as isize;
@@ -324,7 +332,7 @@ impl<'a> Tree<'a> {
 				for m in search.matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
-						redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
+						to_redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
 					}
 				}
 			}
@@ -333,7 +341,7 @@ impl<'a> Tree<'a> {
 				for m in cur.borrow().getsearch().as_ref().expect("Query is empty after calling search").matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
-						redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
+						to_redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
 					}
 				}
 			}
@@ -344,7 +352,7 @@ impl<'a> Tree<'a> {
 				Some(n) => cur = n,
 			}
 		}
-		for (line, pos) in redraw {
+		for (line, pos) in to_redraw {
 			self.drawline(line, pos);
 		}
 	}
@@ -409,7 +417,7 @@ impl<'a> Tree<'a> {
 	fn invokesel(&mut self) {
 		let sel = self.sel.upgrade().expect("Couldn't get selection in invokesel");
 		sel.borrow().invoke();
-		self.refresh();
+		self.redraw();
 	}
 
 	fn click(&mut self, y: usize) {
@@ -483,7 +491,7 @@ impl<'a> Tree<'a> {
 		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&|mut sel, _| Node::collapse(&mut sel))));
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
-		keys.register(&[&[0xc]], Box::new(|dt, _| dt.refresh())); // ^L
+		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
 		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone()); dt.select(sel); }));
 		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone()); dt.select(sel); }));
 		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone()); dt.select(sel); }));
@@ -506,6 +514,8 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
 		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
 		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
+		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
+		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
 		self.resize();

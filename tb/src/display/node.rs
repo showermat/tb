@@ -44,18 +44,6 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	/*pub fn getpath(this: &Rc<RefCell<Node<'a>>>, path: &[usize]) -> Option<Rc<RefCell<Node<'a>>>> {
-		match path {
-			[] => Some(this.clone()),
-			path => {
-				match this.borrow().children.get(path[0]) {
-					None => None,
-					Some(child) => Self::getpath(child, &path[1..])
-				}
-			}
-		}
-	}*/
-
 	/* Things I dislike about Rust:
 	 * Mein Gott!  This is an incredibly nasty syntax for doing a simple tree insertion.  In Java,
 	 * Python, etc., the procedure would be a few fairly self-documenting pointer manipulations:
@@ -123,11 +111,11 @@ impl<'a> Node<'a> {
 		self.cache.prefix0 = self.prefix(maxdepth, true);
 		self.cache.prefix1 = self.prefix(maxdepth, false);
 		let contentw = screenwidth - ((maxdepth + 1) * COLWIDTH) % screenwidth;
-		self.cache.content = self.value.borrow().v.content().format(contentw, super::RESERVED_FG_COLORS);
-		self.cache.placeholder = self.value.borrow().v.placeholder().format(contentw, super::RESERVED_FG_COLORS);
+		self.cache.content = self.value.borrow().content().format(contentw, super::RESERVED_FG_COLORS);
+		self.cache.placeholder = self.value.borrow().placeholder().format(contentw, super::RESERVED_FG_COLORS);
 	}
 
-	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, index: usize, last: bool) -> Self {
+	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool) -> Self {
 		let mut ret = Node {
 			children: vec![],
 			parent: parent,
@@ -151,21 +139,22 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn new_root(val: Box<BackendValue<'a> + 'a>, width: usize) -> Self {
-		Self::new(Weak::new(), Value::new_root(val), width, 0, true)
+		Self::new(Weak::new(), Value::new_root(val), width, true)
 	}
 
 	pub fn expandable(&self) -> bool {
-		self.value.borrow().v.expandable()
+		self.value.borrow().expandable()
 	}
 
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() && !this.borrow().expanded {
+			this.borrow().value.borrow_mut().refresh();
 			if Value::children(&this.borrow().value).len() > 0 {
 				let mut cur = this.clone();
 				let lastidx = Value::children(&this.borrow().value).len() - 1;
 				let children = Value::children(&this.borrow().value);
 				for (i, child) in children.into_iter().enumerate() {
-					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i, i == lastidx)));
+					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx)));
 					this.borrow_mut().children.push(node.clone());
 					Self::insert(&mut cur, &mut node);
 					cur = node;
@@ -178,9 +167,9 @@ impl<'a> Node<'a> {
 	pub fn collapse(this: &mut Rc<RefCell<Node>>) {
 		let expanded = this.borrow().expanded;
 		if expanded {
-			if let Some(next) = this.borrow().next.upgrade() {
+			/*if let Some(next) = this.borrow().next.upgrade() {
 				next.borrow_mut().prev = Rc::downgrade(this);
-			}
+			}*/
 			if let Some(next) = this.borrow().nextsib.upgrade() {
 				next.borrow_mut().prev = Rc::downgrade(this);
 			}
@@ -204,6 +193,14 @@ impl<'a> Node<'a> {
 			if !this.borrow().expanded { Self::expand(this, width); }
 			let mut children = this.borrow_mut().children.clone(); // `clone` necessary to prevent a runtime borrow loop
 			for child in children.iter_mut() { Self::recursive_expand(child, width); }
+		}
+	}
+
+	pub fn refresh(this: &mut Rc<RefCell<Node<'a>>>, w: usize) {
+		this.borrow_mut().reformat(w);
+		if this.borrow().expanded {
+			Self::collapse(this);
+			Self::expand(this, w);
 		}
 	}
 
@@ -262,14 +259,13 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn invoke(&self) {
-		self.value.borrow().v.invoke();
+		self.value.borrow().invoke();
 	}
 }
 
 impl<'a> std::fmt::Debug for Node<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		let content = self.value.borrow().v.content().format(0, super::RESERVED_FG_COLORS).raw();
+		let content = self.value.borrow().content().format(0, super::RESERVED_FG_COLORS).raw();
 		write!(f, "Node({})", content)
 	}
 }
-

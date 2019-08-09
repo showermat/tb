@@ -1,7 +1,5 @@
-use ::format::FmtCmd;
-use ::curses::Color;
-use ::serde_json::{from_reader, Value as V};
 use ::interface::*;
+use ::serde_json::{from_reader, Value as V};
 use ::errors::*;
 
 const HI_STR: usize = 0;
@@ -24,49 +22,49 @@ pub struct JsonValue<'a> {
 }
 
 impl<'a> JsonValue<'a> {
-	fn fmtstr(s: &str) -> FmtCmd {
+	fn fmtstr(s: &str) -> Format {
 		let mut parts = vec![];
 		let mut cur = "".to_string();
 		for c in s.chars() {
 			match c as i32 {
 				0..=8 | 11..=31 | 127 => {
 					let ctrlchar = (((c as i32 + 64) % 128) as u8 as char).to_string();
-					parts.extend(vec![FmtCmd::lit(&cur), FmtCmd::exclude(FmtCmd::nobreak(FmtCmd::color(HI_KWD, FmtCmd::lit(&("^".to_string() + &ctrlchar)))))]);
+					parts.extend(vec![Format::lit(&cur), Format::exclude(Format::nobreak(Format::color(HI_KWD, Format::lit(&("^".to_string() + &ctrlchar)))))]);
 					cur = "".to_string();
 				},
 				_ => cur.push(c),
 			};
 		}
-		if cur.len() > 0 { parts.push(FmtCmd::lit(&cur)); }
-		FmtCmd::cat(parts)
+		if cur.len() > 0 { parts.push(Format::lit(&cur)); }
+		Format::cat(parts)
 	}
-	fn fmtkey(&self) -> FmtCmd {
+	fn fmtkey(&self) -> Format {
 		match self.parent {
-			ParentType::Root => FmtCmd::exclude(FmtCmd::color(HI_MUT, FmtCmd::lit("root"))),
-			ParentType::Object => FmtCmd::color(HI_KEY, Self::fmtstr(&self.key)),
-			ParentType::Array => FmtCmd::exclude(FmtCmd::color(HI_MUT, Self::fmtstr(&self.key))),
+			ParentType::Root => Format::exclude(Format::color(HI_MUT, Format::lit("root"))),
+			ParentType::Object => Format::color(HI_KEY, Self::fmtstr(&self.key)),
+			ParentType::Array => Format::exclude(Format::color(HI_MUT, Self::fmtstr(&self.key))),
 		}
 	}
-	fn fmtval(&self) -> FmtCmd {
+	fn fmtval(&self) -> Format {
 		match self.value {
-			V::String(s) => FmtCmd::color(HI_STR, Self::fmtstr(s)),
-			V::Number(n) => FmtCmd::color(HI_KWD, FmtCmd::lit(&n.to_string())),
-			V::Bool(b) => FmtCmd::color(HI_KWD, FmtCmd::lit(if *b { "true" } else { "false" })),
-			V::Object(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "{ }" } else { "{...}" }))),
-			V::Array(items) => FmtCmd::exclude(FmtCmd::color(HI_KWD, FmtCmd::lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
-			V::Null => FmtCmd::color(HI_KWD, FmtCmd::lit("null")),
+			V::String(s) => Format::color(HI_STR, Self::fmtstr(s)),
+			V::Number(n) => Format::color(HI_KWD, Format::lit(&n.to_string())),
+			V::Bool(b) => Format::color(HI_KWD, Format::lit(if *b { "true" } else { "false" })),
+			V::Object(items) => Format::exclude(Format::color(HI_KWD, Format::lit(if items.is_empty() { "{ }" } else { "{...}" }))),
+			V::Array(items) => Format::exclude(Format::color(HI_KWD, Format::lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
+			V::Null => Format::color(HI_KWD, Format::lit("null")),
 		}
 	}
 }
 
 impl<'a> Value<'a> for JsonValue<'a> {
-	fn placeholder(&self) -> FmtCmd {
+	fn placeholder(&self) -> Format {
 		self.fmtkey()
 	}
-	fn content(&self) -> FmtCmd {
+	fn content(&self) -> Format {
 		match self.parent {
 			ParentType::Root => self.fmtval(),
-			_ => FmtCmd::cat(vec![self.fmtkey(), FmtCmd::exclude(FmtCmd::color(HI_MUT, FmtCmd::lit(": "))), self.fmtval()]),
+			_ => Format::cat(vec![self.fmtkey(), Format::exclude(Format::color(HI_MUT, Format::lit(": "))), self.fmtval()]),
 		}
 	}
 	fn expandable(&self) -> bool {

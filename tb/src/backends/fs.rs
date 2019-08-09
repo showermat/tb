@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::{PathBuf, Path};
 use std::ffi::{OsStr, OsString};
-use ::format::FmtCmd;
-use ::curses::Color;
 use ::interface::*;
 use ::errors::*;
 
@@ -58,17 +56,17 @@ impl FsValue {
 		};
 		Self { name: name, path: path.to_path_buf(), kind: kind }
 	}
-	pub fn value(&self) -> FmtCmd {
+	pub fn value(&self) -> Format {
 		let color_ids = Self::colors().iter().enumerate().map(|(i, (t, _))| (t.clone(), i)).collect::<HashMap<Kind, usize>>();
-		FmtCmd::color(color_ids[&self.kind], FmtCmd::lit(&self.name))
+		Format::color(color_ids[&self.kind], Format::lit(&self.name))
 	}
 }
 
 impl<'a> Value<'a> for FsValue {
-	fn placeholder(&self) -> FmtCmd {
+	fn placeholder(&self) -> Format {
 		self.value()
 	}
-	fn content(&self) -> FmtCmd {
+	fn content(&self) -> Format {
 		self.value()
 	}
 	fn expandable(&self) -> bool {

@@ -7,6 +7,7 @@ extern crate libc_stdhandle;
 use self::ncurses::*;
 use self::libc_stdhandle::*;
 use std::ffi::CString;
+use ::interface::Color;
 
 pub fn prompt_on() {
 	curs_set(CURSOR_VISIBILITY::CURSOR_VISIBLE);
@@ -86,12 +87,6 @@ pub fn read(timeout: i32) -> Key { // Read a UTF-8 char from input
 
 pub fn ncstr(s: &str) -> Vec<i32> {
 	s.chars().map(|c| c as i32).collect()
-}
-
-#[derive(Clone, Copy)]
-pub struct Color {
-	pub c8: u8,
-	pub c256: u8,
 }
 
 #[derive(Clone)]
@@ -198,11 +193,11 @@ pub fn mouseevents() -> Vec<MouseEvent> {
 #[derive(Clone, Debug)]
 pub enum Output {
 	Str(String),
-	AttrOn(ncurses::attr_t),
-	AttrOff(ncurses::attr_t),
+//	AttrOn(ncurses::attr_t),
+//	AttrOff(ncurses::attr_t),
 	Fg(usize),
 	Bg(usize),
-	Move(usize, usize),
+//	Move(usize, usize),
 }
 
 impl Output {
@@ -211,11 +206,11 @@ impl Output {
 		line.iter().for_each(|elem| {
 			match elem {
 				Output::Str(s) => { ncurses::addstr(&s); },
-				Output::AttrOn(a) => { ncurses::attr_on(*a); },
-				Output::AttrOff(a) => { ncurses::attr_off(*a); },
+//				Output::AttrOn(a) => { ncurses::attr_on(*a); },
+//				Output::AttrOff(a) => { ncurses::attr_off(*a); },
 				Output::Fg(c) => { curfg = *c; p.set(curfg, curbg); },
 				Output::Bg(c) => { curbg = *c; p.set(curfg, curbg); },
-				Output::Move(y, x) => { ncurses::mv(*y as i32, *x as i32); },
+//				Output::Move(y, x) => { ncurses::mv(*y as i32, *x as i32); },
 			}
 		});
 	}
