@@ -33,9 +33,11 @@ impl FsValue {
 			(Kind::Meta, 244, 7),
 		].into_iter().map(|(t, c256, c8)| (*t, Color { c8: *c8, c256: *c256 })).collect()
 	}
+
 	fn metavalue<'a>(msg: &str) -> Box<Value<'a> + 'a> {
 		Box::new(FsValue { name: format!("({})", msg), path: PathBuf::new(), kind: Kind::Meta }) as Box<Value<'a> + 'a>
 	}
+
 	fn new(path: &Path) -> Self {
 		let name = match path.file_name () {
 			Some(name) => name,
@@ -56,25 +58,21 @@ impl FsValue {
 		};
 		Self { name: name, path: path.to_path_buf(), kind: kind }
 	}
-	pub fn value(&self) -> Format {
-		let color_ids = Self::colors().iter().enumerate().map(|(i, (t, _))| (t.clone(), i)).collect::<HashMap<Kind, usize>>();
-		Format::color(color_ids[&self.kind], Format::lit(&self.name))
-	}
 }
 
 impl<'a> Value<'a> for FsValue {
-	fn placeholder(&self) -> Format {
-		self.value()
-	}
 	fn content(&self) -> Format {
-		self.value()
+		let color_ids = Self::colors().iter().enumerate().map(|(i, (t, _))| (t.clone(), i)).collect::<HashMap<Kind, usize>>();
+		fmt::color(color_ids[&self.kind], fmt::lit(&self.name))
 	}
+
 	fn expandable(&self) -> bool {
 		match self.kind {
 			Kind::Dir | Kind::DirLink => true,
 			_ => false,
 		}
 	}
+
 	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
 		assert!(self.kind == Kind::Dir || self.kind == Kind::DirLink);
 		match std::fs::read_dir(&self.path) {
@@ -101,6 +99,7 @@ impl<'a> Value<'a> for FsValue {
 			Err(_) => vec![Self::metavalue("inaccessible")],
 		}
 	}
+
 	fn invoke(&self) {
 		if self.kind == Kind::File || self.kind == Kind::FileLink {
 			let path = self.path.as_os_str().to_os_string();
@@ -127,6 +126,7 @@ impl Factory for FsFactory {
 	fn info(&self) -> Info {
 		Info { name: "fs", desc: "Browse the file system" }
 	}
+
 	fn from(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
 		if args.len() == 1 && ["-h", "--help"].contains(&args[0]) {
 			println!("fsb: Browse the file system interactively");
@@ -137,6 +137,7 @@ impl Factory for FsFactory {
 			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<Source>))
 		}
 	}
+
 	fn colors(&self) -> Vec<Color> {
 		FsValue::colors().iter().map(|(_, c)| *c).collect::<Vec<Color>>()
 	}

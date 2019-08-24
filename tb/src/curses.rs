@@ -112,8 +112,10 @@ impl Palette {
 		}
 		ret
 	}
-	pub fn set(&self, fg: usize, bg: usize) {
-		ncurses::color_set(self.pairnum(fg, bg));
+	pub fn set(&self, fg: usize, bg: usize, fillchar: char) {
+		let pair = self.pairnum(fg, bg);
+		ncurses::color_set(pair);
+		ncurses::bkgdset(fillchar as u32 | ncurses::COLOR_PAIR(pair));
 	}
 }
 
@@ -198,6 +200,7 @@ pub enum Output {
 	Fg(usize),
 	Bg(usize),
 //	Move(usize, usize),
+	Fill(char),
 }
 
 impl Output {
@@ -208,9 +211,10 @@ impl Output {
 				Output::Str(s) => { ncurses::addstr(&s); },
 //				Output::AttrOn(a) => { ncurses::attr_on(*a); },
 //				Output::AttrOff(a) => { ncurses::attr_off(*a); },
-				Output::Fg(c) => { curfg = *c; p.set(curfg, curbg); },
-				Output::Bg(c) => { curbg = *c; p.set(curfg, curbg); },
+				Output::Fg(c) => { curfg = *c; p.set(curfg, curbg, ' '); },
+				Output::Bg(c) => { curbg = *c; p.set(curfg, curbg, ' '); },
 //				Output::Move(y, x) => { ncurses::mv(*y as i32, *x as i32); },
+				Output::Fill(c) => { p.set(curfg, curbg, *c); ncurses::clrtoeol(); },
 			}
 		});
 	}

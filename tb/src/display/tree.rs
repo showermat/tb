@@ -28,7 +28,7 @@ pub struct Tree<'a> {
 impl<'a> Tree<'a> {
 	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<Color>) -> Self {
 		let size = curses::scrsize();
-		let mut root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
+		let root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
 		let mut fgcol = vec![ // RESERVED_FG_COLORS always needs to reflect this
 			Color { c8: 7, c256: 7 }, // regular
 			Color { c8: 4, c256: 244 }, // muted
@@ -40,7 +40,6 @@ impl<'a> Tree<'a> {
 			Color { c8: 3, c256: 88 }, // highlighted
 		];
 		let palette = curses::Palette::new(fgcol, bgcol);
-		Node::toggle(&mut root, size.w);
 		Tree {
 			sel: Rc::downgrade(&root),
 			size: size,
@@ -291,6 +290,8 @@ impl<'a> Tree<'a> {
 	}
 
 	fn accordion(&mut self, op: &Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
+		ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
+		ncurses::refresh();
 		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
 		let lines_before = sel.borrow().lines() as isize;
 		let mut maxend = Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
@@ -305,6 +306,7 @@ impl<'a> Tree<'a> {
 		};
 		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
 		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
+		self.statline();
 	}
 
 	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
@@ -466,6 +468,17 @@ impl<'a> Tree<'a> {
 		}
 	}
 
+	fn yanksel(&self) {
+		use clipboard::{ClipboardProvider, ClipboardContext};
+		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").borrow().yank();
+		let maybe_clip: Result<ClipboardContext, Box<std::error::Error>> = ClipboardProvider::new();
+		// Swallowing an error getting the clipboard here isn't the best thing, but it's not the worst, and I'm not sure what the
+		// better option is given the policy of no runtime errors during interactive session
+		if let Ok(mut clip) = maybe_clip {
+			let _ = clip.set_contents(data);
+		}
+	}
+
 	fn seek(&self, rel: &Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Rc<RefCell<Node<'a>>> {
 		let mut ret = self.sel.upgrade().expect("Couldn't get selection in seek");
 		for _ in 1..=self.getnum() {
@@ -516,9 +529,12 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
 		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
 		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); }));
+		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
+
 		self.resize();
+		self.accordion(&|mut sel, w| Node::toggle(&mut sel, w));
 		while !*done.borrow() {
 			let cmd = keys.wait(self);
 			if !digits.contains(&cmd) { self.clearnum(); }

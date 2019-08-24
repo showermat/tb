@@ -3,7 +3,9 @@ use ::curses::Output;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ops::Bound;
+use ::interface::Render;
 use ::regex::Regex;
+use ::interface::BitFlags;
 
 const TABWIDTH: usize = 4;
 
@@ -32,9 +34,11 @@ impl Preformatted {
 	pub fn new(width: usize) -> Self {
 		Preformatted { width: width, content: vec![], raw: vec!["".to_string()], mapping: BTreeMap::new() }
 	}
+
 	pub fn len(&self) -> usize {
 		self.content.len()
 	}
+
 	pub fn write(&self, line: usize, p: &curses::Palette, prefix: Vec<Output>, bg: usize, search: &Option<Search>) {
 		// TODO With the way this and `highlight` are implemented, we've restricted ourselves to
 		// one background color for each `Preformatted`, and this is not exposed to the `DispValue`
@@ -79,18 +83,17 @@ impl Preformatted {
 		};
 		all.push(Output::Bg(bg));
 		all.extend(content);
-		all.append(&mut vec![Output::Fg(0), Output::Bg(0)]);
+		all.append(&mut vec![Output::Fill(' '), Output::Fg(0), Output::Bg(0)]);
 		Output::write(&all, p);
 	}
-	pub fn raw(&self) -> String { // For debug
-		self.raw.join("/")
-	}
+
 	fn translate(&self, chunk: usize, idx: usize) -> (usize, usize, usize) {
 		let (k, v) = self.mapping.range((Bound::Unbounded, Bound::Included((chunk, idx)))).rev().next().expect("No format chunk contains the requested index");
 		assert!(k.0 == chunk);
 		let delta = idx - k.1;
 		(v.0, v.1, v.2 + delta)
 	}
+
 	pub fn search(&self, query: &Regex) -> Search {
 		let matchmap = match self.mapping.is_empty() {
 			true => BTreeMap::new(), // No searchable content in this node, so no matches possible
@@ -170,7 +173,7 @@ pub enum FmtCmd {
 	Container(Vec<FmtCmd>),
 	Color(usize, Box<FmtCmd>),
 	NoBreak(Box<FmtCmd>),
-	Exclude(Box<FmtCmd>),
+	Exclude(BitFlags<Render>, Box<FmtCmd>),
 }
 
 impl FmtCmd {
@@ -211,7 +214,6 @@ impl FmtCmd {
 				 * as a tool for cutting down on code duplication.
 				 */
 				let newline = |output: &mut Preformatted, cur: &mut Vec<Output>, cnt: &mut usize, need_mapping: &mut bool| {
-					cur.append(&mut vec![Output::Fg(0), Output::Bg(0)]);
 					append(&mut output.content, vec![cur.clone(), vec![]]);
 					*cur = vec![Output::Fg(color)];
 					*cnt = 0;
@@ -307,11 +309,11 @@ impl FmtCmd {
 					_ => panic!("Breaks not allowed in nobreak environment"), // TODO Support hard wraps in nobreak
 				}
 			},
-			FmtCmd::Exclude(child) => {
-				if output.raw.last() != Some(&"".to_string()) {
+			FmtCmd::Exclude(render, child) => {
+				if render.contains(Render::Search) && output.raw.last() != Some(&"".to_string()) {
 					output.raw.push("".to_string());
 				}
-				Self::internal_format(output, child, startcol, color, color_offset, false)
+				Self::internal_format(output, child, startcol, color, color_offset, !render.contains(Render::Search))
 			},
 		}
 	}
@@ -344,7 +346,20 @@ impl FmtCmd {
 			FmtCmd::Container(children) => children.iter().any(|x| x.contains(query)),
 			FmtCmd::Color(_, child) => child.contains(query),
 			FmtCmd::NoBreak(child) => child.contains(query),
-			FmtCmd::Exclude(_) => false,
+			FmtCmd::Exclude(r, _) => !r.contains(Render::Search),
+		}
+	}
+
+	pub fn render(&self, kind: Render, sep: &str) -> String {
+		match self {
+			FmtCmd::Literal(value) => value.to_string(),
+			FmtCmd::Container(children) => children.iter().map(|x| x.render(kind, sep)).collect::<Vec<String>>().as_slice().join(sep),
+			FmtCmd::Color(_, child) => child.render(kind, sep),
+			FmtCmd::NoBreak(child) => child.render(kind, sep),
+			FmtCmd::Exclude(r, child) => match r.contains(kind) {
+				true => "".to_string(),
+				false => child.render(kind, sep),
+			}
 		}
 	}
 }

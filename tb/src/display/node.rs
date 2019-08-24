@@ -226,7 +226,8 @@ impl<'a> Node<'a> {
 			false => &self.cache.content,
 		};
 		if let Some(q) = query {
-			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option").query().map(|x| x.as_str().to_string()) != Some(q.as_str().to_string()) {
+			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option")
+				.query().map(|x| x.as_str().to_string()) != Some(q.as_str().to_string()) {
 				self.cache.search = Some(fmt.search(q));
 			}
 		}
@@ -261,11 +262,15 @@ impl<'a> Node<'a> {
 	pub fn invoke(&self) {
 		self.value.borrow().invoke();
 	}
+
+	pub fn yank(&self) -> String {
+		self.value.borrow().content().render(interface::Render::Yank, "")
+	}
 }
 
 impl<'a> std::fmt::Debug for Node<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		let content = self.value.borrow().content().format(0, super::RESERVED_FG_COLORS).raw();
+		let content = self.value.borrow().content().render(interface::Render::Debug, " ");
 		write!(f, "Node({})", content)
 	}
 }

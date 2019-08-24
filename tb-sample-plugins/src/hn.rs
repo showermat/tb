@@ -1,4 +1,5 @@
 use ::tb_interface::*;
+use ::tb_interface::fmt::*;
 use ::errors::*;
 use ::serde_json::Value as V;
 use rayon::prelude::*;
@@ -76,26 +77,20 @@ impl<'a> Value<'a> for Item {
 		}
 		if let Some(post) = &self.post {
 			match &post.content {
-				Content::Story { title, url, score, descendants } => Format::cat(vec![
-					Format::color(0, Format::lit(&title)),
-					Format::lit("\n"),
-					Format::lit(&url),
-					Format::lit("\n"),
-					Format::color(1, Format::lit(&format!("{} points by {} {} - {} comments", score, post.by, timefmt(post.time), descendants))),
+				Content::Story { title, url, score, descendants } => cat(vec![
+					noyank(cat(vec![color(0, lit(&title)), lit("\n")])),
+					lit(&url),
+					noyank(color(1, lit(&format!("\n{} points by {} {} - {} comments", score, post.by, timefmt(post.time), descendants)))),
 				]),
-				Content::Comment { text, .. } => Format::cat(vec![
-					Format::color(1, Format::lit(&format!("{} {}\n", post.by, timefmt(post.time)))),
-					Format::lit(&html2text::from_read(text.as_bytes(), 10090)),
+				Content::Comment { text, .. } => cat(vec![
+					color(1, lit(&format!("{} {}\n", post.by, timefmt(post.time)))),
+					lit(&html2text::from_read(text.as_bytes(), 10090)),
 				]),
 			}
 		}
 		else {
-			Format::lit("Hacker News")
+			lit("Hacker News")
 		}
-	}
-
-	fn placeholder(&self) -> Format {
-		self.content()
 	}
 
 	fn expandable(&self) -> bool {

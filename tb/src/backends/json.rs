@@ -1,4 +1,5 @@
 use ::interface::*;
+use ::interface::fmt::*;
 use ::serde_json::{from_reader, Value as V};
 use ::errors::*;
 
@@ -29,30 +30,32 @@ impl<'a> JsonValue<'a> {
 			match c as i32 {
 				0..=8 | 11..=31 | 127 => {
 					let ctrlchar = (((c as i32 + 64) % 128) as u8 as char).to_string();
-					parts.extend(vec![Format::lit(&cur), Format::exclude(Format::nobreak(Format::color(HI_KWD, Format::lit(&("^".to_string() + &ctrlchar)))))]);
+					parts.extend(vec![lit(&cur), nosearch(nobreak(color(HI_KWD, lit(&("^".to_string() + &ctrlchar)))))]);
 					cur = "".to_string();
 				},
 				_ => cur.push(c),
 			};
 		}
-		if cur.len() > 0 { parts.push(Format::lit(&cur)); }
-		Format::cat(parts)
+		if cur.len() > 0 { parts.push(lit(&cur)); }
+		cat(parts)
 	}
+
 	fn fmtkey(&self) -> Format {
 		match self.parent {
-			ParentType::Root => Format::exclude(Format::color(HI_MUT, Format::lit("root"))),
-			ParentType::Object => Format::color(HI_KEY, Self::fmtstr(&self.key)),
-			ParentType::Array => Format::exclude(Format::color(HI_MUT, Self::fmtstr(&self.key))),
+			ParentType::Root => nosearch(color(HI_MUT, lit("root"))),
+			ParentType::Object => noyank(color(HI_KEY, Self::fmtstr(&self.key))),
+			ParentType::Array => hide(color(HI_MUT, Self::fmtstr(&self.key))),
 		}
 	}
+
 	fn fmtval(&self) -> Format {
 		match self.value {
-			V::String(s) => Format::color(HI_STR, Self::fmtstr(s)),
-			V::Number(n) => Format::color(HI_KWD, Format::lit(&n.to_string())),
-			V::Bool(b) => Format::color(HI_KWD, Format::lit(if *b { "true" } else { "false" })),
-			V::Object(items) => Format::exclude(Format::color(HI_KWD, Format::lit(if items.is_empty() { "{ }" } else { "{...}" }))),
-			V::Array(items) => Format::exclude(Format::color(HI_KWD, Format::lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
-			V::Null => Format::color(HI_KWD, Format::lit("null")),
+			V::String(s) => color(HI_STR, Self::fmtstr(s)),
+			V::Number(n) => color(HI_KWD, lit(&n.to_string())),
+			V::Bool(b) => color(HI_KWD, lit(if *b { "true" } else { "false" })),
+			V::Object(items) => nosearch(color(HI_KWD, lit(if items.is_empty() { "{ }" } else { "{...}" }))),
+			V::Array(items) => nosearch(color(HI_KWD, lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
+			V::Null => color(HI_KWD, lit("null")),
 		}
 	}
 }
@@ -61,18 +64,21 @@ impl<'a> Value<'a> for JsonValue<'a> {
 	fn placeholder(&self) -> Format {
 		self.fmtkey()
 	}
+
 	fn content(&self) -> Format {
 		match self.parent {
 			ParentType::Root => self.fmtval(),
-			_ => Format::cat(vec![self.fmtkey(), Format::exclude(Format::color(HI_MUT, Format::lit(": "))), self.fmtval()]),
+			_ => cat(vec![self.fmtkey(), hide(color(HI_MUT, lit(": "))), self.fmtval()]),
 		}
 	}
+
 	fn expandable(&self) -> bool {
 		match *self.value {
 			V::Array(_) | V::Object(_) => true,
 			_ => false,
 		}
 	}
+
 	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
 		match self.value {
 			V::Array(items) =>
@@ -82,7 +88,6 @@ impl<'a> Value<'a> for JsonValue<'a> {
 			_ => vec![],
 		}
 	}
-	fn invoke(&self) { }
 }
 
 pub struct JsonSource {
@@ -107,6 +112,7 @@ impl Factory for JsonFactory {
 	fn info(&self) -> Info {
 		Info { name: "j", desc: "Browse JSON documents" }
 	}
+
 	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
 		match args.get(0).cloned() { // TODO Why is the `cloned` here necessary?
 			Some("-h") | Some("--help") => {
@@ -128,6 +134,7 @@ Copyright (GPLv3) 2019 Matthew Schauer
 			},
 		}
 	}
+
 	fn colors(&self) -> Vec<Color> {
 		vec![
 			Color { c8: 2, c256: 77 }, // string

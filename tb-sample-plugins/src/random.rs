@@ -8,12 +8,8 @@ pub struct Rand {
 }
 
 impl<'a> Value<'a> for Rand {
-	fn placeholder(&self) -> Format {
-		Format::lit(&self.value)
-	}
-
 	fn content(&self) -> Format {
-		Format::lit(&self.value)
+		fmt::lit(&self.value)
 	}
 
 	fn expandable(&self) -> bool {
@@ -35,8 +31,6 @@ impl<'a> Value<'a> for Rand {
 		};
 		(0..nchild).map(|_| Box::new(Rand { depth: self.depth + 1, value: randstr() }) as Box<Value<'a> + 'a>).collect()
 	}
-
-	fn invoke(&self) { }
 }
 
 pub struct RandSource { }

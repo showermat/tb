@@ -13,4 +13,5 @@ wcwidth = "1.0"
 regex = "1"
 libloading = "0.5"
 itertools = "0.8"
+clipboard = "0.5"
 tb-interface = {path = "../tb-interface"}

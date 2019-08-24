@@ -1,10 +1,11 @@
 #[macro_use]
 extern crate error_chain;
-extern crate tb_interface as interface;
 extern crate serde_json;
 extern crate regex;
 extern crate libloading;
 extern crate itertools;
+extern crate clipboard;
+extern crate tb_interface as interface;
 
 mod display;
 mod keybinder;
@@ -22,16 +23,13 @@ use libloading::Library;
 
 /*
  * TODO:
- *     Figure out how we're going to deal with user attempts to interact with nodes that no longer exist in the backend, only in the cache.  Getting children for a nonexistent node might get nasty
- *     Loading indicator
  *     TODOs, FIXMEs, code style, release cleanup
  * Future:
- *     Fun example backends: Reddit, Hacker News https://hacker-news.firebaseio.com/v0/item/18918215.json https://hacker-news.firebaseio.com/v0/topstories.json
  *     Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend regex
  *     jq integration: https://crates.io/crates/json-query
- *     Allow backends to register custom keybindings and configuration items
  * Ideas:
  *     ncurses replacement: https://github.com/TimonPost/crossterm https://github.com/redox-os/termion
+ *     Allow backends to register custom keybindings and config items
  * Bugs:
  *     Serde doesn't give us object elements in document order.  Is there any way to achieve this?
  * Plugin note: When building with crate_type = dylib, there are two issues that I haven't fixed yet: a segfault on exit in `__call_tls_dtors` (only after using a backend loaded from a plugin), and the plugin dynamically linking Rust's stdlib.so, which it then can't find unless I set LD_LIBRARY_PATH.  Both of these are fixed by using crate_type cdylib, so I'm doing that for now, but I'm not sure what further ramifications making that change has.
@@ -39,8 +37,7 @@ use libloading::Library;
 
 const APPNAME: &str = "tb";
 
-// Borrowed with thanks from clap <https://kbknapp.github.io/clap-rs/clap/macro.crate_version!.html>
-macro_rules! crate_version {
+macro_rules! crate_version { // Borrowed with thanks from clap <https://kbknapp.github.io/clap-rs/clap/macro.crate_version!.html>
 	() => {
 		format!("{}.{}.{}{}",
 			env!("CARGO_PKG_VERSION_MAJOR"),
@@ -100,11 +97,11 @@ fn info_exit(backends: HashMap<String, Backend>, errors: Vec<Error>) {
 Command-line interactive browser for JSON and other tree-structured data
 Copyright (GPLv3) 2019 Matthew Schauer <https://github.com/showermat/tb>
 
-Usage: tb help|<backend> [backend args...]
+Usage: {} help|<backend> [backend args...]
 
 Available backends:
 {}
-"#, APPNAME, crate_version!(), backend_fmt);
+"#, APPNAME, crate_version!(), APPNAME, backend_fmt);
 	if errors.len() > 0 {
 		println!("\nLoad errors:");
 		for err in errors {

@@ -20,13 +20,13 @@ fn fmtcmd_from_format(fmt: Format) -> FmtCmd {
 		Format::Container(v) => FmtCmd::Container(v.into_iter().map(|x| fmtcmd_from_format(x)).collect()),
 		Format::Color(c, v) => FmtCmd::Color(c, Box::new(fmtcmd_from_format(*v))),
 		Format::NoBreak(v) => FmtCmd::NoBreak(Box::new(fmtcmd_from_format(*v))),
-		Format::Exclude(v) => FmtCmd::Exclude(Box::new(fmtcmd_from_format(*v))),
+		Format::Exclude(r, v) => FmtCmd::Exclude(r, Box::new(fmtcmd_from_format(*v))),
 	}
 }
 
 // TODO In order to avoid producing multiple different instances of a child when calling
 // children(), we may want to keep an array of Weaks in the struct and only call children() if the
-// element we're looking for is missing.  Not sure whether this is useful at all.
+// element we're looking for is missing.  Not sure whether this would be useful at all.
 pub struct Value<'a> {
 	v: BackendValue<'a>,
 	pub parent: Option<Rc<RefCell<Value<'a>>>>,
