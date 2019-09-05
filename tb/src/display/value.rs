@@ -10,7 +10,7 @@ type BackendValue<'a> = Box<::interface::Value<'a> + 'a>;
 // to include all of the formatting code in FmtCmd's impl, especially since that will require
 // drawing in the regex crate, a bunch of curses commands, and a ton of other junk that isn't
 // necessary to instantiate FmtCmds, which is all that's necessary from the plugin's side.  I'd
-// rather not pull the majority of my display code into the interface library, because I imagin it
+// rather not pull the majority of my display code into the interface library, because I imagine it
 // will inflate the sizes of plugins quite a bit.  Until I figure out a more elegant solution, I'm
 // providing a dummy struct with the same interface in the interface library, and doing a deep-copy
 // conversion to the full-featured struct here.  Ick.
@@ -24,9 +24,6 @@ fn fmtcmd_from_format(fmt: Format) -> FmtCmd {
 	}
 }
 
-// TODO In order to avoid producing multiple different instances of a child when calling
-// children(), we may want to keep an array of Weaks in the struct and only call children() if the
-// element we're looking for is missing.  Not sure whether this would be useful at all.
 pub struct Value<'a> {
 	v: BackendValue<'a>,
 	pub parent: Option<Rc<RefCell<Value<'a>>>>,

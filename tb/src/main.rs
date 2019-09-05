@@ -23,10 +23,14 @@ use libloading::Library;
 
 /*
  * TODO:
+ *     In nobreaks: clip lines too long to fit, allow hard wraps (then remove testing nobreak from rand backend)
+ *     Support resizing in prompt
  *     TODOs, FIXMEs, code style, release cleanup
+ *     Increment minor version
  * Future:
  *     Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend regex
  *     jq integration: https://crates.io/crates/json-query
+ *     Support monochrome mode in curses.rs
  * Ideas:
  *     ncurses replacement: https://github.com/TimonPost/crossterm https://github.com/redox-os/termion
  *     Allow backends to register custom keybindings and config items
@@ -161,10 +165,10 @@ fn run() -> Result<()> {
 	let factory = &backends.get(&backend).ok_or(format!("Could not find backend \"{}\"", backend))?.factory;
 	if let Some(treeres) = factory.from(subargs) {
 		let tree = treeres?;
-		curses::setup();
-		let mut dt = display::Tree::new(tree.root(), factory.colors());
+		curses::setup()?;
+		let mut dt = display::Tree::new(tree.root(), factory.colors())?;
 		dt.interactive();
-		curses::cleanup();
+		curses::cleanup()?;
 	};
 	Ok(())
 }

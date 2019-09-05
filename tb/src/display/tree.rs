@@ -9,6 +9,7 @@ use ::keybinder::Keybinder;
 use super::node::Node;
 use super::pos::Pos;
 use super::weak_ptr_eq;
+use ::errors::*;
 
 pub struct Tree<'a> {
 	root: Rc<RefCell<Node<'a>>>,
@@ -26,21 +27,13 @@ pub struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<Color>) -> Self {
+	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<Color>) -> Result<Self> {
 		let size = curses::scrsize();
 		let root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
-		let mut fgcol = vec![ // RESERVED_FG_COLORS always needs to reflect this
-			Color { c8: 7, c256: 7 }, // regular
-			Color { c8: 4, c256: 244 }, // muted
-		];
+		let mut fgcol = super::FG_COLORS.to_vec();
 		fgcol.extend(colors);
-		let bgcol = vec![
-			Color { c8: 0, c256: 0 }, // regular
-			Color { c8: 7, c256: 237 }, // selected
-			Color { c8: 3, c256: 88 }, // highlighted
-		];
-		let palette = curses::Palette::new(fgcol, bgcol);
-		Tree {
+		let palette = curses::Palette::new(fgcol, super::BG_COLORS.to_vec())?;
+		Ok(Tree {
 			sel: Rc::downgrade(&root),
 			size: size,
 			start: Pos::new(Rc::downgrade(&root), 0),
@@ -53,7 +46,7 @@ impl<'a> Tree<'a> {
 			numbuf: vec![],
 			palette: palette,
 			root: root,
-		}
+		})
 	}
 
 	fn last(&self) -> Rc<RefCell<Node<'a>>> {
@@ -198,47 +191,46 @@ impl<'a> Tree<'a> {
 	}
 
 	fn select(&mut self, sel: Rc<RefCell<Node<'a>>>) -> isize {
-		match self.check_term_size() {
-			false => 0,
-			true => {
-				let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
-				let down = oldsel.borrow().is_before(sel.clone());
-				let oldlines = self.sellines();
-				let curpos = match self.down {
-					true => oldsel.borrow().lines() - 1,
-					false => 0,
-				};
-				match down {
-					true => self.offset += Pos::new(self.sel.clone(), curpos).dist_fwd(Pos::new(Rc::downgrade(&sel), sel.borrow().lines() - 1))
-						.expect("Down is true but new selection not after old") as isize,
-					false => self.offset -= Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), curpos))
-						.expect("Down is false but new selection not before old") as isize,
-				};
-				self.down = down;
-				self.sel = Rc::downgrade(&sel);
-				let mut scrolldist = 0;
-				if self.offset < 0 { let sd = self.offset; scrolldist = self.scroll(sd); }
-				else if self.offset >= self.size.h as isize { let sd = self.offset - self.size.h as isize + 1; scrolldist = self.scroll(sd); }
-				else { self.statline(); }
-				if oldlines.0 as isize - scrolldist < self.size.h as isize && oldlines.1 as isize - scrolldist >= 0 {
-					self.drawlines((
-						std::cmp::max(oldlines.0 as isize - scrolldist, 0) as usize,
-						std::cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize
-					)); // Clear the old selection
+		if self.check_term_size() {
+			let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
+			let same = Rc::ptr_eq(&oldsel, &sel);
+			let down = oldsel.borrow().is_before(sel.clone());
+			let oldlines = self.sellines();
+			let curpos = match self.down {
+				true => oldsel.borrow().lines() - 1,
+				false => 0,
+			};
+			match down {
+				true => self.offset += Pos::new(self.sel.clone(), curpos).dist_fwd(Pos::new(Rc::downgrade(&sel), sel.borrow().lines() - 1))
+					.expect("Down is true but new selection not after old") as isize,
+				false => self.offset -= Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), curpos))
+					.expect("Down is false but new selection not before old") as isize,
+			};
+			self.down = down;
+			self.sel = Rc::downgrade(&sel);
+			let mut scrolldist = 0;
+			if self.offset < 0 { let sd = self.offset; scrolldist = self.scroll(sd); }
+			else if self.offset >= self.size.h as isize { let sd = self.offset - self.size.h as isize + 1; scrolldist = self.scroll(sd); }
+			else { self.statline(); }
+			if oldlines.0 as isize - scrolldist < self.size.h as isize && oldlines.1 as isize - scrolldist >= 0 && !same {
+				self.drawlines(( // Clear the old selection
+					std::cmp::max(oldlines.0 as isize - scrolldist, 0) as usize,
+					std::cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize
+				));
+			}
+			if (scrolldist.abs() as usize) < self.size.h {
+				let mut sellines = self.sellines();
+				if scrolldist > 0 {
+					sellines = (std::cmp::min(sellines.0, self.size.h - scrolldist as usize), std::cmp::min(sellines.1, self.size.h - scrolldist as usize));
 				}
-				if (scrolldist.abs() as usize) < self.size.h {
-					let mut sellines = self.sellines();
-					if scrolldist > 0 {
-						sellines = (std::cmp::min(sellines.0, self.size.h - scrolldist as usize), std::cmp::min(sellines.1, self.size.h - scrolldist as usize));
-					}
-					else if scrolldist < 0 {
-						sellines = (std::cmp::max(sellines.0, -scrolldist as usize), std::cmp::max(sellines.1, -scrolldist as usize));
-					}
-					if sellines.0 < sellines.1 { self.drawlines(sellines); }
+				else if scrolldist < 0 {
+					sellines = (std::cmp::max(sellines.0, -scrolldist as usize), std::cmp::max(sellines.1, -scrolldist as usize));
 				}
-				scrolldist
-			},
+				if sellines.0 < sellines.1 && !same { self.drawlines(sellines); }
+			}
+			scrolldist
 		}
+		else { 0 }
 	}
 
 	fn foreach(&mut self, f: &Fn(&mut Node)) {
@@ -276,9 +268,8 @@ impl<'a> Tree<'a> {
 				if let Some(ret) = fwd { ret }
 				else { -(curpos.dist_fwd(self.start.clone()).expect("Could not determine new offset in resize") as isize) }
 			};
-			// TODO This `select` causes an unnecessary redraw of the selection that we should try to avoid
-			// TODO Also, if start.node == sel and sel is multi-line, then on each resize we'll
-			// jump to the top of sel, which is not terrible but perhaps not desirable
+			// TODO If start.node == sel and sel is multi-line, then on each resize we'll jump to
+			// the top of sel, which is not terrible but perhaps not desirable
 			self.select(sel);
 			self.redraw();
 		}
@@ -374,7 +365,8 @@ impl<'a> Tree<'a> {
 					Node::expand(&mut n, self.size.w);
 					if n.borrow().is_before(sel.clone()) {
 						if !n.borrow().is_before(self.start.node.upgrade().expect("Tree has invalid start position")) {
-							let newlines = Pos::new(Rc::downgrade(&n), 0).dist_fwd(nextsib_pos.clone()).expect("Expanding node has no next sibling") - 1; // TODO Not entirely sure this should be an error
+							// If n was before sel while collapsed, then n must have a next sibling
+							let newlines = Pos::new(Rc::downgrade(&n), 0).dist_fwd(nextsib_pos.clone()).expect("Expanding node has no next sibling") - 1;
 							self.offset += newlines as isize;
 						}
 					}
@@ -404,7 +396,8 @@ impl<'a> Tree<'a> {
 			let size = self.size; // For borrowing
 			let palette = self.palette.clone();
 			let searchhist = self.searchhist.clone(); // Any way to avoid these expensive clones?
-			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, if forward { "/" } else { "?" }, "", searchhist, incsearch, &palette);
+			// We should probably bubble up "non-internal" errors all the way up to the user, just to get nice error traces
+			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, if forward { "/" } else { "?" }, "", searchhist, incsearch, &palette).expect("Prompt failed");
 			if res == "" {
 				self.setquery(oldquery);
 			}
@@ -471,7 +464,7 @@ impl<'a> Tree<'a> {
 	fn yanksel(&self) {
 		use clipboard::{ClipboardProvider, ClipboardContext};
 		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").borrow().yank();
-		let maybe_clip: Result<ClipboardContext, Box<std::error::Error>> = ClipboardProvider::new();
+		let maybe_clip: std::result::Result<ClipboardContext, Box<std::error::Error>> = ClipboardProvider::new();
 		// Swallowing an error getting the clipboard here isn't the best thing, but it's not the worst, and I'm not sure what the
 		// better option is given the policy of no runtime errors during interactive session
 		if let Ok(mut clip) = maybe_clip {

@@ -6,12 +6,13 @@ use std::ops::Bound;
 use ::interface::Render;
 use ::regex::Regex;
 use ::interface::BitFlags;
+use ::errors::*;
 
-const TABWIDTH: usize = 4;
+const TABWIDTH: usize = 40;
 
 pub struct Search {
 	query: Option<Regex>,
-	matches: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>>, // line, item, start, end // TODO Consider BTreeMap<(usize, usize), BTreeSet<(usize, usize)>> or similar
+	matches: BTreeMap<usize, BTreeMap<usize, BTreeSet<(usize, usize)>>>, // line, item, start, end
 }
 
 impl Search {
@@ -39,19 +40,20 @@ impl Preformatted {
 		self.content.len()
 	}
 
-	pub fn write(&self, line: usize, p: &curses::Palette, prefix: Vec<Output>, bg: usize, search: &Option<Search>) {
+	pub fn write(&self, line: usize, p: &curses::Palette, prefix: Vec<Output>, bg: usize, highlight: usize, search: &Option<Search>) -> Result<()> {
 		// TODO With the way this and `highlight` are implemented, we've restricted ourselves to
-		// one background color for each `Preformatted`, and this is not exposed to the `DispValue`
+		// one background color for each `Preformatted`, and this is not exposed to the Value
 		// implementer.  We need to do some significant re-implementation to expose background
-		// colors and attributes to the `DispValue`, and to make those work efficiently with
+		// colors and Curses attributes to the Value, and to make those work efficiently with
 		// highlighting.
-		let highlight = 2; // TODO Don't hardcode
+		// Also, `bg` and `highlight` are hardcoded into `Node::drawline`.  That's something to
+		// keep in mind as we rearchitect.
 		let mut all = prefix;
 		let maybe_line = match search {
 			Some(info) => info.matches.get(&line),
 			None => None,
 		};
-		let content = match maybe_line { // TODO Extend to foreground color and attrs as well
+		let content = match maybe_line {
 			Some(matches) => {
 				self.content[line].iter().enumerate().flat_map(|(i, item)| {
 					match matches.get(&i) {
@@ -84,7 +86,7 @@ impl Preformatted {
 		all.push(Output::Bg(bg));
 		all.extend(content);
 		all.append(&mut vec![Output::Fill(' '), Output::Fg(0), Output::Bg(0)]);
-		Output::write(&all, p);
+		Output::write(&all, p)
 	}
 
 	fn translate(&self, chunk: usize, idx: usize) -> (usize, usize, usize) {
@@ -99,17 +101,9 @@ impl Preformatted {
 			true => BTreeMap::new(), // No searchable content in this node, so no matches possible
 			false => {
 				// Get absolute start-end pairs for each match
-				/*let mut matches = self.raw.iter().enumerate().flat_map(|(i, chunk)| {
-					chunk.match_indices(query).map(|res| (self.translate(i, res.0), self.translate(i, res.0 + res.1.chars().count())))
-				}).peekable();*/
-				// The below is a standin until I get the above to work
-				let mut matchvec = vec![];
-				for (i, chunk) in self.raw.iter().enumerate() {
-					for res in query.find_iter(chunk) {
-						matchvec.push((self.translate(i, res.start()), self.translate(i, res.end())));
-					}
-				}
-				let mut matches = matchvec.iter().peekable();
+				let mut matches = self.raw.iter().enumerate().flat_map(|(i, chunk)| {
+					query.find_iter(chunk).map(move |res| (self.translate(i, res.start()), self.translate(i, res.end())))
+				}).peekable();
 
 				// Convert start-end pairs into start and end indices for each string in `content`
 				let mut splitpairs = vec![];
@@ -137,7 +131,7 @@ impl Preformatted {
 										break;
 									}
 									else if getlineitem(&next.1) > (i, j) {
-										splitpairs.push((i, j, (next.0).2, s.chars().count()));
+										splitpairs.push((i, j, (next.0).2, s.len()));
 										on = true;
 										break;
 									}
@@ -179,8 +173,8 @@ pub enum FmtCmd {
 impl FmtCmd {
 	fn internal_format(output: &mut Preformatted, content: &FmtCmd, startcol: usize, color: usize, color_offset: usize, record: bool) -> usize {
 		let addchar = |target: &mut Vec<Output>, c: char| {
-			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); return; } // TODO Using early return to avoid borrow-checker issues with an if-else representation
-			target.push(Output::Str(c.to_string()));
+			if let Some(Output::Str(ref mut s)) = target.last_mut() { s.push(c); }
+			else { target.push(Output::Str(c.to_string())); }
 		};
 		let append = |target: &mut Vec<Vec<Output>>, mut content: Vec<Vec<Output>>| {
 			if content.len() == 0 { }
@@ -226,10 +220,13 @@ impl FmtCmd {
 							newline(output, &mut cur, &mut cnt, &mut need_mapping);
 						},
 						'\t' => {
-							if output.width > 0 && cnt >= output.width - TABWIDTH {
+							if output.width > 0 && cnt + TABWIDTH >= output.width {
 								newline(output, &mut cur, &mut cnt, &mut need_mapping);
 							}
-							cur.push(Output::Str(std::iter::repeat(" ").take(TABWIDTH).collect::<String>())); // FIXME What if width < 4?
+							let efftabw =
+								if output.width == 0 || output.width > TABWIDTH { TABWIDTH }
+								else { output.width };
+							cur.push(Output::Str(std::iter::repeat(" ").take(efftabw).collect::<String>()));
 							cnt += TABWIDTH;
 							need_mapping = true;
 						},
@@ -249,7 +246,7 @@ impl FmtCmd {
 								let line = std::cmp::max(output.content.len() as isize - 1, 0) as usize;
 								let item = output.content.last().map(|x| x.len()).unwrap_or(0) + cur.len() - 1;
 								let idx = match cur.last() {
-									Some(Output::Str(s)) => s.len() - charlen,
+									Some(Output::Str(s)) => s.len() - std::cmp::min(charlen, s.len()),
 									_ => 0
 								};
 								// Note that the mapping is based on byte indices, not char
@@ -260,7 +257,10 @@ impl FmtCmd {
 								add_mapping(0, 0); // Only necessary for tabs at end of line
 							}
 							else {
-								add_mapping(1, 1);
+								//add_mapping(1, 1);
+								//let charlen = output.raw.last().expect("Found a preformatted with an empty raw").chars().last().expect("").len_utf8();
+								let charlen = c.len_utf8();
+								add_mapping(charlen, charlen);
 							}
 							need_mapping = false;
 						}
@@ -301,42 +301,45 @@ impl FmtCmd {
 							startcol + sublen
 						}
 						else {
-							assert!(sublen < output.width); // FIXME What should we do if the screen is narrower than a nowrap?
+							assert!(sublen < output.width);
 							output.content.append(&mut sub.content);
 							sublen
 						}
 					},
-					_ => panic!("Breaks not allowed in nobreak environment"), // TODO Support hard wraps in nobreak
+					_ => panic!("Breaks not allowed in no-break environment"),
 				}
 			},
 			FmtCmd::Exclude(render, child) => {
 				if render.contains(Render::Search) && output.raw.last() != Some(&"".to_string()) {
 					output.raw.push("".to_string());
 				}
-				Self::internal_format(output, child, startcol, color, color_offset, !render.contains(Render::Search))
+				Self::internal_format(output, child, startcol, color, color_offset, record && !render.contains(Render::Search))
 			},
 		}
 	}
 
 	pub fn format(&self, width: usize, color_offset: usize) -> Preformatted {
+		const DEBUG: bool = false;
 		let mut ret = Preformatted::new(width);
-		Self::internal_format(&mut ret, self, 0, 0 /* FIXME */, color_offset, true);
+		Self::internal_format(&mut ret, self, 0, 0, color_offset, true);
 		if ret.raw.last() == Some(&"".to_string()) { // Ick.  This is necessary because searching for anchors (^ and $) causes a panic if we leave empty strings in the raw
 			ret.raw.pop();
 		}
-		/*eprintln!("RAW");
-		ret.raw.iter().enumerate().for_each(|(i, x)| eprintln!("\t{}: {:?}", i, x));
-		eprintln!("CONTENT");
-		ret.content.iter().enumerate().for_each(|(i, x)| {
-			x.iter().enumerate().for_each(|(j, y)| {
-				if let Output::Str(s) = y {
-					eprintln!("\t{}.{}: {:?}", i, j, s);
-				}
+		if DEBUG {
+			eprintln!("RAW");
+			ret.raw.iter().enumerate().for_each(|(i, x)| eprintln!("\t{}: {:?}", i, x));
+			eprintln!("CONTENT");
+			ret.content.iter().enumerate().for_each(|(i, x)| {
+				x.iter().enumerate().for_each(|(j, y)| {
+					if let Output::Str(s) = y {
+						eprintln!("\t{}.{}: {:?}", i, j, s);
+					}
+				});
 			});
-		});
-		eprintln!("MAPPING");
-		ret.mapping.iter().for_each(|(k, v)| eprintln!("\t{:?} -> {:?}", k, v));
-		eprintln!("====");*/
+			eprintln!("MAPPING");
+			ret.mapping.iter().for_each(|(k, v)| eprintln!("\t{:?} -> {:?}", k, v));
+			eprintln!("====");
+		}
 		ret
 	}
 
@@ -346,7 +349,7 @@ impl FmtCmd {
 			FmtCmd::Container(children) => children.iter().any(|x| x.contains(query)),
 			FmtCmd::Color(_, child) => child.contains(query),
 			FmtCmd::NoBreak(child) => child.contains(query),
-			FmtCmd::Exclude(r, _) => !r.contains(Render::Search),
+			FmtCmd::Exclude(r, child) => !r.contains(Render::Search) && child.contains(query),
 		}
 	}
 

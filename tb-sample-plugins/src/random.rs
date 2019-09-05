@@ -51,8 +51,4 @@ impl Factory for RandFactory {
 	fn from(&self, _args: &[&str]) -> Option<Result<Box<Source>>> {
 		Some(Ok(Box::new(RandSource { })))
 	}
-
-	fn colors(&self) -> Vec<Color> {
-		vec![]
-	}
 }

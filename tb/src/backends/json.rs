@@ -114,8 +114,8 @@ impl Factory for JsonFactory {
 	}
 
 	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
-		match args.get(0).cloned() { // TODO Why is the `cloned` here necessary?
-			Some("-h") | Some("--help") => {
+		match args.get(0) {
+			Some(&"-h") | Some(&"--help") => {
 				print!(r#"jb: Browse JSON documents interactively
 
 Provide the name of the input file to read as the sole command-line argument, or

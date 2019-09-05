@@ -52,7 +52,7 @@ pub struct Info {
 pub trait Factory {
 	fn info(&self) -> Info;
 	fn from(&self, &[&str]) -> Option<errors::Result<Box<Source>>>;
-	fn colors(&self) -> Vec<Color>;
+	fn colors(&self) -> Vec<Color> { vec![] }
 }
 
 pub mod fmt { // Formatting shortcuts to make tree-building easier

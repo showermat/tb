@@ -52,8 +52,12 @@ impl<'a> Node<'a> {
 	 * borrow-scoping makes a lot uglier than it needs to be, and until I run it I have no idea
 	 * whether I'll run into some issue with a borrow loop or something that will cause a panic.
 	 */
+	/* NOTE This function does not work for general-case insertion!  It is only designed for
+	 * inserting children and siblings into the tree, not parents.  For our purposes, that is
+	 * sufficient.  If the node on one or both sides is deeper in the tree than the one being
+	 * added, sibling links will not be updated correctly.
+	 */
 	fn insert(after: &mut Rc<RefCell<Node<'a>>>, node: &mut Rc<RefCell<Node<'a>>>) {
-		// FIXME Sibling links will be updated incorrectly if the node on each side is deeper in the tree than the one being inserted.
 		let mut borrowed_node = node.borrow_mut();
 		let mut borrowed_after = after.borrow_mut();
 		if let Some(next) = borrowed_after.next.upgrade() {
@@ -111,8 +115,8 @@ impl<'a> Node<'a> {
 		self.cache.prefix0 = self.prefix(maxdepth, true);
 		self.cache.prefix1 = self.prefix(maxdepth, false);
 		let contentw = screenwidth - ((maxdepth + 1) * COLWIDTH) % screenwidth;
-		self.cache.content = self.value.borrow().content().format(contentw, super::RESERVED_FG_COLORS);
-		self.cache.placeholder = self.value.borrow().placeholder().format(contentw, super::RESERVED_FG_COLORS);
+		self.cache.content = self.value.borrow().content().format(contentw, super::FG_COLORS.len());
+		self.cache.placeholder = self.value.borrow().placeholder().format(contentw, super::FG_COLORS.len());
 	}
 
 	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool) -> Self {
@@ -148,7 +152,6 @@ impl<'a> Node<'a> {
 
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() && !this.borrow().expanded {
-			this.borrow().value.borrow_mut().refresh();
 			if Value::children(&this.borrow().value).len() > 0 {
 				let mut cur = this.clone();
 				let lastidx = Value::children(&this.borrow().value).len() - 1;
@@ -167,6 +170,7 @@ impl<'a> Node<'a> {
 	pub fn collapse(this: &mut Rc<RefCell<Node>>) {
 		let expanded = this.borrow().expanded;
 		if expanded {
+			this.borrow().value.borrow_mut().refresh();
 			/*if let Some(next) = this.borrow().next.upgrade() {
 				next.borrow_mut().prev = Rc::downgrade(this);
 			}*/
@@ -214,10 +218,11 @@ impl<'a> Node<'a> {
 			true => 1,
 			false => 0,
 		};
+		let highlight = 2;
 		match self.expanded {
-			true => self.cache.placeholder.write(line, palette, prefix, bg, &self.cache.search),
-			false => self.cache.content.write(line, palette, prefix, bg, &self.cache.search),
-		};
+			true => self.cache.placeholder.write(line, palette, prefix, bg, highlight, &self.cache.search),
+			false => self.cache.content.write(line, palette, prefix, bg, highlight, &self.cache.search),
+		}.expect("Failed to write line to terminal");
 	}
 
 	pub fn search(&mut self, query: &Option<Regex>) {
@@ -241,8 +246,9 @@ impl<'a> Node<'a> {
 	}
 
 	pub fn searchfrom(&self, query: &Regex, offset: isize) -> Vec<usize> {
-		// TODO For offset > 1 (or 10, or 100), it's probably worth first checking the number of
-		// occurrences of the query in the document, then modding offset by that.
+		// If the user provides an enormous offset, that's their problem.  We could choose to first
+		// check the number of occurrences and mod by that, but that requires a full document scan,
+		// which isn't practical for some backends.
 		(0..offset.abs()).fold(self.value.clone(), |val, _| {
 			Value::searchfrom(&val, query, offset > 0).unwrap_or(val)
 		}).borrow().path()
