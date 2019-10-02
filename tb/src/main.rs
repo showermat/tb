@@ -21,24 +21,6 @@ use std::path::PathBuf;
 use itertools::Itertools;
 use libloading::Library;
 
-/*
- * TODO:
- *     In nobreaks: clip lines too long to fit, allow hard wraps (then remove testing nobreak from rand backend)
- *     Support resizing in prompt
- *     TODOs, FIXMEs, code style, release cleanup
- *     Increment minor version
- * Future:
- *     Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend regex
- *     jq integration: https://crates.io/crates/json-query
- *     Support monochrome mode in curses.rs
- * Ideas:
- *     ncurses replacement: https://github.com/TimonPost/crossterm https://github.com/redox-os/termion
- *     Allow backends to register custom keybindings and config items
- * Bugs:
- *     Serde doesn't give us object elements in document order.  Is there any way to achieve this?
- * Plugin note: When building with crate_type = dylib, there are two issues that I haven't fixed yet: a segfault on exit in `__call_tls_dtors` (only after using a backend loaded from a plugin), and the plugin dynamically linking Rust's stdlib.so, which it then can't find unless I set LD_LIBRARY_PATH.  Both of these are fixed by using crate_type cdylib, so I'm doing that for now, but I'm not sure what further ramifications making that change has.
- */
-
 const APPNAME: &str = "tb";
 
 macro_rules! crate_version { // Borrowed with thanks from clap <https://kbknapp.github.io/clap-rs/clap/macro.crate_version!.html>
@@ -67,7 +49,7 @@ impl BackendSource {
 	fn to_string(&self) -> String {
 		match self {
 			BackendSource::BuiltIn => "built-in".to_string(),
-			BackendSource::FromFile(p) => format!("from file {}", p.to_string_lossy()),
+			BackendSource::FromFile(p) => format!("from {}", p.to_string_lossy()),
 		}
 	}
 }
@@ -167,7 +149,10 @@ fn run() -> Result<()> {
 		let tree = treeres?;
 		curses::setup()?;
 		let mut dt = display::Tree::new(tree.root(), factory.colors())?;
-		dt.interactive();
+		if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dt.interactive())) {
+			let _ = curses::cleanup();
+			std::panic::resume_unwind(e);
+		}
 		curses::cleanup()?;
 	};
 	Ok(())

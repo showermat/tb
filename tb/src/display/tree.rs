@@ -525,7 +525,6 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
-
 		self.resize();
 		self.accordion(&|mut sel, w| Node::toggle(&mut sel, w));
 		while !*done.borrow() {
