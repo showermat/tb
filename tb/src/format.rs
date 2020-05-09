@@ -231,7 +231,7 @@ impl FmtCmd {
 							need_mapping = true;
 						},
 						c => {
-							let cw = wcwidth::char_width(c).unwrap_or(0) as usize;
+							let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as usize;
 							if output.width > 0 && cnt + cw > output.width {
 								newline(output, &mut cur, &mut cnt, &mut need_mapping);
 							}

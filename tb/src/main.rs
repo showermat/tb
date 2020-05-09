@@ -56,14 +56,14 @@ impl BackendSource {
 
 struct Backend {
 	source: BackendSource,
-	factory: Box<Factory>,
+	factory: Box<dyn Factory>,
 }
 
 impl Backend {
-	fn builtin(f: Box<Factory>) -> Self {
+	fn builtin(f: Box<dyn Factory>) -> Self {
 		Self { source: BackendSource::BuiltIn, factory: f }
 	}
-	fn fromfile(path: PathBuf, f: Box<Factory>) -> Self {
+	fn fromfile(path: PathBuf, f: Box<dyn Factory>) -> Self {
 		Self { source: BackendSource::FromFile(path), factory: f }
 	}
 }
@@ -108,7 +108,7 @@ fn run() -> Result<()> {
 	];
 	let (plugins, load_errors) = extract_errors(load_plugins().unwrap_or(vec![])); // Do NOT consume `plugins`!  Use `iter`, not `into_iter`.  Otherwise the symbols extracted from it will end up with dangling pointers and you have fun segfault time.
 	let (plugin_backends, factory_errors) = extract_errors(plugins.iter().map(|(path, lib)| unsafe {
-		let func: Result<libloading::Symbol<unsafe extern fn() -> Vec<Box<Factory>>>> = lib.get(b"get_factories").chain_err(|| format!("Couldn't load symbol `get_factories` from shared library {}", path.to_string_lossy()));
+		let func: Result<libloading::Symbol<unsafe extern fn() -> Vec<Box<dyn Factory>>>> = lib.get(b"get_factories").chain_err(|| format!("Couldn't load symbol `get_factories` from shared library {}", path.to_string_lossy()));
 		func.map(move |f| f().into_iter().map(move |factory| Backend::fromfile(path.clone(), factory)))
 	}).collect());
 	let backends: HashMap<String, Backend> = itertools::concat(vec![

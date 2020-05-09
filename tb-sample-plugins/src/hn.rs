@@ -95,10 +95,10 @@ impl<'a> Value<'a> for Item {
 		true
 	}
 
-	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<dyn Value<'a> + 'a>> {
 		let ids = self.childids().unwrap_or(vec![]);
 		let ret: Vec<Item> = ids.par_iter().filter_map(|id| Self::get(*id).ok()).collect();
-		ret.into_iter().map(|x| Box::new(x) as Box<Value>).collect()
+		ret.into_iter().map(|x| Box::new(x) as Box<dyn Value>).collect()
 	}
 
 	fn invoke(&self) {
@@ -125,7 +125,7 @@ impl HnSource {
 }
 
 impl Source for HnSource {
-	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
+	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
 		Box::new(self.root.clone())
 	}
 }
@@ -133,7 +133,7 @@ impl Source for HnSource {
 pub struct HnFactory { }
 
 impl HnFactory {
-	fn construct(args: &[&str]) -> Result<Box<Source>> {
+	fn construct(args: &[&str]) -> Result<Box<dyn Source>> {
 		if args.len() > 1 {
 			bail!("Only one argument is permitted");
 		}
@@ -152,7 +152,7 @@ impl Factory for HnFactory {
 		Info { name: "hn", desc: "Read HackerNews threads" }
 	}
 
-	fn from(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
+	fn from(&self, args: &[&str]) -> Option<Result<Box<dyn Source>>> {
 		Some(Self::construct(args))
 	}
 

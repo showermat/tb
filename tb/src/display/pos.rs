@@ -1,7 +1,6 @@
 use std::rc::Weak;
 use std::cell::RefCell;
 use super::node::Node;
-use super::weak_ptr_eq;
 
 #[derive(Clone)]
 pub struct Pos<'a> {
@@ -22,7 +21,7 @@ impl<'a> Pos<'a> {
 	pub fn dist_fwd(&self, to: Pos<'a>) -> Option<usize> {
 		let mut ret = 0;
 		let mut cur = self.clone();
-		while !weak_ptr_eq(&cur.node, &to.node) {
+		while !cur.node.ptr_eq(&to.node) {
 			match cur.node.upgrade() {
 				None => return None,
 				Some(n) => {

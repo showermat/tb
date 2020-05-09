@@ -10,7 +10,7 @@ use std::cell::RefCell;
  * accept an instance of the calling class as an argument.  The workaround works in this case, but
  * it sure ain't pretty.
  */
-type Action<T> = Rc<RefCell<Box<FnMut(&mut T, &[i32])>>>;
+type Action<T> = Rc<RefCell<Box<dyn FnMut(&mut T, &[i32])>>>;
 
 struct Node<T> {
 	children: HashMap<i32, Box<Node<T>>>,
@@ -26,7 +26,7 @@ impl<T> Node<T> {
 		else { (*self.children.entry(path[0]).or_insert(Box::new(Node::new()))).assign(&path[1..], action); }
 	}
 	pub fn wait(&mut self, t: &mut T, path: &[i32]) -> Vec<i32> {
-		if let Some(ref mut a) = self.action { let x: &mut FnMut(&mut T, &[i32]) = &mut *a.borrow_mut(); x(t, path); }
+		if let Some(ref mut a) = self.action { let x: &mut dyn FnMut(&mut T, &[i32]) = &mut *a.borrow_mut(); x(t, path); }
 		if self.children.is_empty() { path.to_vec() }
 		else {
 			ncurses::timeout(4000);
@@ -53,7 +53,7 @@ impl<'a, T> Keybinder<T> {
 	pub fn new() -> Self {
 		Keybinder { root: Node::new() }
 	}
-	pub fn register(&mut self, paths: &[&[i32]], action: Box<FnMut(&mut T, &[i32])>) {
+	pub fn register(&mut self, paths: &[&[i32]], action: Box<dyn FnMut(&mut T, &[i32])>) {
 		let ins = Rc::new(RefCell::new(action));
 		for path in paths { self.root.assign(path, ins.clone()); }
 	}

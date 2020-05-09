@@ -8,7 +8,6 @@ use ::interface::{Value, Color};
 use ::keybinder::Keybinder;
 use super::node::Node;
 use super::pos::Pos;
-use super::weak_ptr_eq;
 use ::errors::*;
 
 pub struct Tree<'a> {
@@ -27,7 +26,7 @@ pub struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-	pub fn new(json: Box<Value<'a> + 'a>, colors: Vec<Color>) -> Result<Self> {
+	pub fn new(json: Box<dyn Value<'a> + 'a>, colors: Vec<Color>) -> Result<Self> {
 		let size = curses::scrsize();
 		let root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
 		let mut fgcol = super::FG_COLORS.to_vec();
@@ -76,7 +75,7 @@ impl<'a> Tree<'a> {
 		if self.check_term_size() {
 			ncurses::mv(line as i32, 0);
 			ncurses::clrtoeol();
-			let selected = weak_ptr_eq(&self.sel, &cur.node);
+			let selected = self.sel.ptr_eq(&cur.node);
 			if let Some(node) = cur.node.upgrade() {
 				if DEBUG {
 					let fill = std::iter::repeat(" ").take(self.size.w).collect::<String>();
@@ -182,7 +181,7 @@ impl<'a> Tree<'a> {
 						ncurses::scrl(-(dist as i32));
 						self.drawlines((0, dist));
 					}
-					if !weak_ptr_eq(&self.sel, &oldsel) { self.drawlines(self.sellines()); }
+					if !self.sel.ptr_eq(&oldsel) { self.drawlines(self.sellines()); }
 				}
 				self.statline();
 				diff
@@ -233,7 +232,7 @@ impl<'a> Tree<'a> {
 		else { 0 }
 	}
 
-	fn foreach(&mut self, f: &Fn(&mut Node)) {
+	fn foreach(&mut self, f: &dyn Fn(&mut Node)) {
 		let mut cur = Rc::downgrade(&self.root);
 		while let Some(n) = cur.upgrade() {
 			f(&mut n.borrow_mut());
@@ -280,7 +279,7 @@ impl<'a> Tree<'a> {
 		self.select(target);
 	}
 
-	fn accordion(&mut self, op: &Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
+	fn accordion(&mut self, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
 		ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
 		ncurses::refresh();
 		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
@@ -419,7 +418,7 @@ impl<'a> Tree<'a> {
 		let now = time::Instant::now();
 		let oldsel = self.sel.clone();
 		self.selpos(y);
-		if weak_ptr_eq(&oldsel, &self.sel) && now.duration_since(self.lastclick).as_millis() < 400 {
+		if oldsel.ptr_eq(&self.sel) && now.duration_since(self.lastclick).as_millis() < 400 {
 			self.accordion(&|mut sel, w| Node::toggle(&mut sel, w));
 			self.lastclick = now.checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"); // Epoch would be better
 		}
@@ -464,7 +463,7 @@ impl<'a> Tree<'a> {
 	fn yanksel(&self) {
 		use clipboard::{ClipboardProvider, ClipboardContext};
 		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").borrow().yank();
-		let maybe_clip: std::result::Result<ClipboardContext, Box<std::error::Error>> = ClipboardProvider::new();
+		let maybe_clip: std::result::Result<ClipboardContext, Box<dyn std::error::Error>> = ClipboardProvider::new();
 		// Swallowing an error getting the clipboard here isn't the best thing, but it's not the worst, and I'm not sure what the
 		// better option is given the policy of no runtime errors during interactive session
 		if let Ok(mut clip) = maybe_clip {
@@ -472,7 +471,7 @@ impl<'a> Tree<'a> {
 		}
 	}
 
-	fn seek(&self, rel: &Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Rc<RefCell<Node<'a>>> {
+	fn seek(&self, rel: &dyn Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Rc<RefCell<Node<'a>>> {
 		let mut ret = self.sel.upgrade().expect("Couldn't get selection in seek");
 		for _ in 1..=self.getnum() {
 			let next = rel(&ret);

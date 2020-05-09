@@ -16,7 +16,7 @@ impl<'a> Value<'a> for Rand {
 		true
 	}
 
-	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<dyn Value<'a> + 'a>> {
 		fn exprand(scale: f32) -> u16 {
 			let raw: f32 = rand::thread_rng().sample(::rand_distr::Exp::new(0.5).unwrap());
 			(raw * scale) as u16
@@ -29,14 +29,14 @@ impl<'a> Value<'a> for Rand {
 			0 => 5,
 			depth => exprand(5.0 / (depth + 1) as f32),
 		};
-		(0..nchild).map(|_| Box::new(Rand { depth: self.depth + 1, value: randstr() }) as Box<Value<'a> + 'a>).collect()
+		(0..nchild).map(|_| Box::new(Rand { depth: self.depth + 1, value: randstr() }) as Box<dyn Value<'a> + 'a>).collect()
 	}
 }
 
 pub struct RandSource { }
 
 impl Source for RandSource {
-	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
+	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
 		Box::new(Rand { depth: 0, value: "root".to_string() })
 	}
 }
@@ -48,7 +48,7 @@ impl Factory for RandFactory {
 		Info { name: "rand", desc: "Create a tree of random and ever-changing nonsense" }
 	}
 
-	fn from(&self, _args: &[&str]) -> Option<Result<Box<Source>>> {
+	fn from(&self, _args: &[&str]) -> Option<Result<Box<dyn Source>>> {
 		Some(Ok(Box::new(RandSource { })))
 	}
 }

@@ -79,12 +79,12 @@ impl<'a> Value<'a> for JsonValue<'a> {
 		}
 	}
 
-	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<dyn Value<'a> + 'a>> {
 		match self.value {
 			V::Array(items) =>
-				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, parent: ParentType::Array }) as Box<Value>).collect(),
+				items.iter().enumerate().map(|(i, v)| Box::new(JsonValue { key: i.to_string(), value: &v, parent: ParentType::Array }) as Box<dyn Value>).collect(),
 			V::Object(items) =>
-				items.iter().map(|(k, v)| Box::new(JsonValue { key: k.to_string(), value: &v, parent: ParentType::Object }) as Box<Value>).collect(),
+				items.iter().map(|(k, v)| Box::new(JsonValue { key: k.to_string(), value: &v, parent: ParentType::Object }) as Box<dyn Value>).collect(),
 			_ => vec![],
 		}
 	}
@@ -95,13 +95,13 @@ pub struct JsonSource {
 }
 
 impl JsonSource {
-	pub fn read<T: std::io::Read>(input: T) -> Result<Box<Source>> {
+	pub fn read<T: std::io::Read>(input: T) -> Result<Box<dyn Source>> {
 		Ok(Box::new(Self { json: from_reader(input).chain_err(|| "could not parse input as JSON")? }))
 	}
 }
 
 impl Source for JsonSource {
-	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
+	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
 		Box::new(JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root })
 	}
 }
@@ -113,7 +113,7 @@ impl Factory for JsonFactory {
 		Info { name: "j", desc: "Browse JSON documents" }
 	}
 
-	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
+	fn from<'a>(&self, args: &[&str]) -> Option<Result<Box<dyn Source>>> {
 		match args.get(0) {
 			Some(&"-h") | Some(&"--help") => {
 				print!(r#"jb: Browse JSON documents interactively
@@ -145,6 +145,6 @@ Copyright (GPLv3) 2019 Matthew Schauer
 	}
 }
 
-pub fn get_factory() -> Box<Factory> {
+pub fn get_factory() -> Box<dyn Factory> {
 	Box::new(JsonFactory { })
 }

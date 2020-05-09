@@ -1,4 +1,3 @@
-use std::rc::{Rc, Weak};
 use ::interface::Color;
 
 const COLWIDTH: usize = 4;
@@ -11,14 +10,6 @@ const BG_COLORS: [Color; 3] = [
 	Color { c8: 7, c256: 237 }, // selected
 	Color { c8: 3, c256: 88 }, // highlighted
 ];
-
-fn weak_ptr_eq<T>(a: &Weak<T>, b: &Weak<T>) -> bool { // Shim for Weak::ptr_eq https://github.com/rust-lang/rust/issues/55981
-	match (a.upgrade(), b.upgrade()) {
-		(Some(x), Some(y)) => Rc::ptr_eq(&x, &y),
-		(None, None) => true,
-		_ => false,
-	}
-}
 
 mod value;
 mod node;

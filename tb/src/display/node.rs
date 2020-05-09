@@ -5,7 +5,6 @@ use ::format::{Preformatted, Search};
 use ::curses;
 use super::value::Value;
 use ::interface::Value as BackendValue;
-use super::weak_ptr_eq;
 use super::COLWIDTH;
 
 struct NodeCache {
@@ -64,7 +63,7 @@ impl<'a> Node<'a> {
 			let mut borrowed_next = next.borrow_mut();
 			borrowed_next.prev = Rc::downgrade(&node);
 			borrowed_node.next = Rc::downgrade(&next);
-			if weak_ptr_eq(&borrowed_next.parent, &borrowed_node.parent) {
+			if borrowed_next.parent.ptr_eq(&borrowed_node.parent) {
 				borrowed_next.prevsib = Rc::downgrade(&node);
 			}
 		}
@@ -72,7 +71,7 @@ impl<'a> Node<'a> {
 		borrowed_node.prev = Rc::downgrade(&after);
 		borrowed_node.nextsib = borrowed_node.next.clone();
 		borrowed_node.prevsib = borrowed_node.prev.clone();
-		if !weak_ptr_eq(&Rc::downgrade(&after), &borrowed_node.parent) {
+		if !Rc::downgrade(&after).ptr_eq(&borrowed_node.parent) {
 			borrowed_after.nextsib = Rc::downgrade(node);
 		}
 	}
@@ -142,7 +141,7 @@ impl<'a> Node<'a> {
 		ret
 	}
 
-	pub fn new_root(val: Box<BackendValue<'a> + 'a>, width: usize) -> Self {
+	pub fn new_root(val: Box<dyn BackendValue<'a> + 'a>, width: usize) -> Self {
 		Self::new(Weak::new(), Value::new_root(val), width, true)
 	}
 

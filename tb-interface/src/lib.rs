@@ -99,7 +99,7 @@ pub trait Value<'a> {
 	fn expandable(&self) -> bool;
 
 	/// The children of this node.  This is guaranteed not to be called if `expandable` is false.
-	fn children(&self) -> Vec<Box<Value<'a> + 'a>>;
+	fn children(&self) -> Vec<Box<dyn Value<'a> + 'a>>;
 
 	/// If it is desirable to format the value differently when it is collapsed, specify that
 	/// format here.  When the value is collapsed, the format returned by `placeholder` will be
@@ -119,7 +119,7 @@ pub trait Value<'a> {
 /// program startup, to retrieve the root of the tree.
 pub trait Source {
 	/// Return the root of the tree to be displayed.
-	fn root<'a>(&'a self) -> Box<Value<'a> + 'a>;
+	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a>;
 }
 
 pub struct Info {
@@ -146,7 +146,7 @@ pub trait Factory {
 	/// simply exit normally.  If there is some problem with the input, return `Some(Err)` and TB
 	/// will print an error trace and abort.  Otherwise, return `Some(Ok(Box<Source>))` and TB will
 	/// enter interactive mode.
-	fn from(&self, &[&str]) -> Option<errors::Result<Box<Source>>>;
+	fn from(&self, &[&str]) -> Option<errors::Result<Box<dyn Source>>>;
 	fn colors(&self) -> Vec<Color> { vec![] }
 }
 

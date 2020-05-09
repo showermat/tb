@@ -9,7 +9,7 @@ struct Prompt<'a, T> {
 	width: usize, // Width of the text area without the prompt
 	prompt: String, // Static text preceding the editing area
 	history: Vec<String>, // Vector of past entries the user can scroll through
-	callback: Box<FnMut(&mut T, &str)>, // Called every time the content changes
+	callback: Box<dyn FnMut(&mut T, &str)>, // Called every time the content changes
 	histidx: usize, // Current location in history
 	buf: Vec<char>, // Contents of editing area
 	pos: usize, // Cursor position in buffer
@@ -23,7 +23,7 @@ struct Prompt<'a, T> {
 fn charwidth(c: char) -> usize {
 	match c.is_ascii_control() {
 		true => 2,
-		false => wcwidth::char_width(c).unwrap_or(0) as usize,
+		false => unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as usize,
 	}
 }
 
@@ -46,7 +46,7 @@ fn repeat(c: char, n: usize) -> String {
 }
 
 impl<'a, T> Prompt<'a, T> {
-	fn new(t: &'a mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, mut history: Vec<String>, callback: Box<FnMut(&mut T, &str)>, palette: &'a curses::Palette) -> Result<Self> {
+	fn new(t: &'a mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, mut history: Vec<String>, callback: Box<dyn FnMut(&mut T, &str)>, palette: &'a curses::Palette) -> Result<Self> {
 		history.push(init.to_string());
 		let histlen = history.len();
 		let promptw = prompt.chars().count();
@@ -240,7 +240,7 @@ impl<'a, T> Prompt<'a, T> {
 	}
 }
 
-pub fn prompt<T>(t: &mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, history: Vec<String>, callback: Box<FnMut(&mut T, &str)>, palette: &curses::Palette) -> Result<String> {
+pub fn prompt<T>(t: &mut T, location: (usize, usize), width: usize, prompt: &str, init: &str, history: Vec<String>, callback: Box<dyn FnMut(&mut T, &str)>, palette: &curses::Palette) -> Result<String> {
 	curses::prompt_on()?;
 	let ret = Prompt::<T>::new(t, location, width, prompt, init, history, callback, palette)?.read()?;
 	curses::prompt_off()?;

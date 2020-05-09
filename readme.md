@@ -23,6 +23,28 @@ Then, run it with your file as the only argument, or pipe in some JSON:
     chmod +x ~/bin/jb
     echo "[1, 2, 3]" | jb
 
+Key bindings are mostly compatible with Vim:
+
+  - Right/Left: expand/collaps node
+  - Space: toggle node
+  - `x`: recursively expand node
+  - j`/`k`: select next/previous node
+  - `J`/`K`: select next/previous sibling
+  - `p`: select parent
+  - `g`/`G`: select first/last node
+  - `H`/`M`/`L`: select top/middle/bottom node on screen
+  - `^F`/`^B`: scroll down/up by one screen
+  - `^D`/`^U`: scroll down/up by half a screen
+  - `^E`/`^Y`: scroll down/up by one line
+  - `zz`: center selected node on screen
+  - `/`/`?`: search forward/backward
+  - `n`/`N`: jump to next/previous match
+  - `c`: clear search
+  - `r`: refresh selected node
+  - `R`: refresh root node
+  - `y`: copy node text
+  - `q`: exit program
+
 ## Other Backends
 
 JSON is TB's primary target, but it can also be used to browse other tree-structured data, if an appropriate backend exists.  To

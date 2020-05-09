@@ -31,11 +31,11 @@ impl FsValue {
 			(Kind::Special, 226, 3),
 			(Kind::Inaccessible, 196, 1),
 			(Kind::Meta, 244, 7),
-		].into_iter().map(|(t, c256, c8)| (*t, Color { c8: *c8, c256: *c256 })).collect()
+		].iter().map(|(t, c256, c8)| (*t, Color { c8: *c8, c256: *c256 })).collect()
 	}
 
-	fn metavalue<'a>(msg: &str) -> Box<Value<'a> + 'a> {
-		Box::new(FsValue { name: format!("({})", msg), path: PathBuf::new(), kind: Kind::Meta }) as Box<Value<'a> + 'a>
+	fn metavalue<'a>(msg: &str) -> Box<dyn Value<'a> + 'a> {
+		Box::new(FsValue { name: format!("({})", msg), path: PathBuf::new(), kind: Kind::Meta }) as Box<dyn Value<'a> + 'a>
 	}
 
 	fn new(path: &Path) -> Self {
@@ -73,7 +73,7 @@ impl<'a> Value<'a> for FsValue {
 		}
 	}
 
-	fn children(&self) -> Vec<Box<Value<'a> + 'a>> {
+	fn children(&self) -> Vec<Box<dyn Value<'a> + 'a>> {
 		assert!(self.kind == Kind::Dir || self.kind == Kind::DirLink);
 		match std::fs::read_dir(&self.path) {
 			Ok(entries) => {
@@ -92,7 +92,7 @@ impl<'a> Value<'a> for FsValue {
 								Ok(f) => Box::new(FsValue::new(&f.path())),
 								Err(_) => Self::metavalue("inaccessible"),
 							}
-						}).collect::<Vec<Box<Value<'a> + 'a>>>()
+						}).collect::<Vec<Box<dyn Value<'a> + 'a>>>()
 					}
 				}
 			},
@@ -115,7 +115,7 @@ pub struct FsSource {
 }
 
 impl Source for FsSource {
-	fn root<'a>(&'a self) -> Box<Value<'a> + 'a> {
+	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
 		Box::new(FsValue::new(&self.root))
 	}
 }
@@ -127,14 +127,14 @@ impl Factory for FsFactory {
 		Info { name: "fs", desc: "Browse the file system" }
 	}
 
-	fn from(&self, args: &[&str]) -> Option<Result<Box<Source>>> {
+	fn from(&self, args: &[&str]) -> Option<Result<Box<dyn Source>>> {
 		if args.len() == 1 && ["-h", "--help"].contains(&args[0]) {
 			println!("fsb: Browse the file system interactively");
 			None
 		}
 		else {
 			let root = PathBuf::from(args.get(0).cloned().unwrap_or(".")).canonicalize().chain_err(|| "Couldn't read requested path");
-			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<Source>))
+			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<dyn Source>))
 		}
 	}
 
@@ -143,6 +143,6 @@ impl Factory for FsFactory {
 	}
 }
 
-pub fn get_factory() -> Box<Factory> {
+pub fn get_factory() -> Box<dyn Factory> {
 	Box::new(FsFactory { })
 }

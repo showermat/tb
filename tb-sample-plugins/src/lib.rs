@@ -17,7 +17,7 @@ mod random;
 mod hn;
 
 #[no_mangle]
-pub fn get_factories() -> Vec<Box<Factory>> {
+pub fn get_factories() -> Vec<Box<dyn Factory>> {
 	vec![
 		Box::new(random::RandFactory { }),
 		Box::new(hn::HnFactory { }),
