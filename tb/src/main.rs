@@ -5,6 +5,7 @@ extern crate regex;
 extern crate libloading;
 extern crate itertools;
 extern crate clipboard;
+extern crate owning_ref;
 extern crate tb_interface as interface;
 
 mod display;
@@ -81,7 +82,7 @@ fn info_exit(backends: HashMap<String, Backend>, errors: Vec<Error>) {
 		.map(|(name, backend)| format!("    {: <12}{} ({})", name, backend.factory.info().desc, backend.source.to_string())).join("\n");
 	print!(r#"{} {}
 Command-line interactive browser for JSON and other tree-structured data
-Copyright (GPLv3) 2019 Matthew Schauer <https://github.com/showermat/tb>
+Copyright (GPLv3) 2020 Matthew Schauer <https://github.com/showermat/tb>
 
 Usage: {} help|<backend> [backend args...]
 
@@ -148,7 +149,7 @@ fn run() -> Result<()> {
 	if let Some(treeres) = factory.from(subargs) {
 		let tree = treeres?;
 		curses::setup()?;
-		let mut dt = display::Tree::new(tree.root(), factory.colors())?;
+		let mut dt = display::Tree::new(tree, factory.colors())?;
 		if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dt.interactive())) {
 			let _ = curses::cleanup();
 			std::panic::resume_unwind(e);

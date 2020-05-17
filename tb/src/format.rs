@@ -8,7 +8,7 @@ use ::regex::Regex;
 use ::interface::BitFlags;
 use ::errors::*;
 
-const TABWIDTH: usize = 40;
+const TABWIDTH: usize = 4;
 
 pub struct Search {
 	query: Option<Regex>,
@@ -166,6 +166,7 @@ pub enum FmtCmd {
 	Literal(String),
 	Container(Vec<FmtCmd>),
 	Color(usize, Box<FmtCmd>),
+	RawColor(usize, Box<FmtCmd>),
 	NoBreak(Box<FmtCmd>),
 	Exclude(BitFlags<Render>, Box<FmtCmd>),
 }
@@ -279,6 +280,9 @@ impl FmtCmd {
 			FmtCmd::Color(newcolor, child) => {
 				Self::internal_format(output, child, startcol, *newcolor + color_offset, color_offset, record)
 			},
+			FmtCmd::RawColor(newcolor, child) => {
+				Self::internal_format(output, child, startcol, *newcolor, color_offset, record)
+			},
 			FmtCmd::NoBreak(child) => {
 				let mut sub = Preformatted::new(0);
 				let sublen = Self::internal_format(&mut sub, child, 0, color, color_offset, record);
@@ -348,6 +352,7 @@ impl FmtCmd {
 			FmtCmd::Literal(value) => query.is_match(value),
 			FmtCmd::Container(children) => children.iter().any(|x| x.contains(query)),
 			FmtCmd::Color(_, child) => child.contains(query),
+			FmtCmd::RawColor(_, child) => child.contains(query),
 			FmtCmd::NoBreak(child) => child.contains(query),
 			FmtCmd::Exclude(r, child) => !r.contains(Render::Search) && child.contains(query),
 		}
@@ -358,6 +363,7 @@ impl FmtCmd {
 			FmtCmd::Literal(value) => value.to_string(),
 			FmtCmd::Container(children) => children.iter().map(|x| x.render(kind, sep)).collect::<Vec<String>>().as_slice().join(sep),
 			FmtCmd::Color(_, child) => child.render(kind, sep),
+			FmtCmd::RawColor(_, child) => child.render(kind, sep),
 			FmtCmd::NoBreak(child) => child.render(kind, sep),
 			FmtCmd::Exclude(r, child) => match r.contains(kind) {
 				true => "".to_string(),

@@ -87,4 +87,3 @@ impl<'a> Pos<'a> {
 		else { self.clone() }
 	}
 }
-

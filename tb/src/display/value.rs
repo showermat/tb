@@ -4,7 +4,7 @@ use ::regex::Regex;
 use ::interface::Format;
 use ::format::FmtCmd;
 
-type BackendValue<'a> = Box<::interface::Value<'a> + 'a>;
+type BackendValue<'a> = Box<dyn (::interface::Value<'a>) + 'a>;
 
 // FIXME! Both tb and its plugins need to be able to access the FmtCmd type.  However, I don't want
 // to include all of the formatting code in FmtCmd's impl, especially since that will require
@@ -19,6 +19,7 @@ fn fmtcmd_from_format(fmt: Format) -> FmtCmd {
 		Format::Literal(s) => FmtCmd::Literal(s),
 		Format::Container(v) => FmtCmd::Container(v.into_iter().map(|x| fmtcmd_from_format(x)).collect()),
 		Format::Color(c, v) => FmtCmd::Color(c, Box::new(fmtcmd_from_format(*v))),
+		Format::RawColor(c, v) => FmtCmd::RawColor(c, Box::new(fmtcmd_from_format(*v))),
 		Format::NoBreak(v) => FmtCmd::NoBreak(Box::new(fmtcmd_from_format(*v))),
 		Format::Exclude(r, v) => FmtCmd::Exclude(r, Box::new(fmtcmd_from_format(*v))),
 	}

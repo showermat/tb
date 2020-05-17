@@ -170,9 +170,6 @@ impl<'a> Node<'a> {
 		let expanded = this.borrow().expanded;
 		if expanded {
 			this.borrow().value.borrow_mut().refresh();
-			/*if let Some(next) = this.borrow().next.upgrade() {
-				next.borrow_mut().prev = Rc::downgrade(this);
-			}*/
 			if let Some(next) = this.borrow().nextsib.upgrade() {
 				next.borrow_mut().prev = Rc::downgrade(this);
 			}

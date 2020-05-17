@@ -62,6 +62,10 @@ pub enum Format {
 	/// be overridden.
 	Color(usize, Box<Format>),
 
+	/// This is the same as `Color`, only it can access the static colors defined by the internal
+	/// display module.  It is only intended for internal use.
+	RawColor(usize, Box<Format>),
+
 	/// Prevent automatic line wrapping in sub-nodes.  If there is a string of characters that need
 	/// to stay together, wrap them in a `NoBreak`.  Keep it short, though -- TB does not currently
 	/// support `NoBreak`s with lines longer than the screen width.  Hard wraps and line breaks
@@ -120,6 +124,10 @@ pub trait Value<'a> {
 pub trait Source {
 	/// Return the root of the tree to be displayed.
 	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a>;
+
+	/// Apply to the contained tree a transformation described by the provided string, returning the
+	/// transformed tree as a new source.
+	fn transform(&self, _transformation: &str) -> errors::Result<Box<dyn Source>> { Err(errors::Error::from("This source does not implement transformations")) }
 }
 
 pub struct Info {

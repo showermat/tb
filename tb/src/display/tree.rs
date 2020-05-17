@@ -2,15 +2,66 @@ use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use std::time;
 use std::collections::HashMap;
+use ::owning_ref::OwningHandle;
 use ::regex::Regex;
 use ::curses;
-use ::interface::{Value, Color};
+use ::interface::*;
 use ::keybinder::Keybinder;
 use super::node::Node;
 use super::pos::Pos;
+use super::statmsg::StatMsg;
 use ::errors::*;
 
+type OwnedRoot<'a> = OwningHandle<Box<dyn Source>, Box<Rc<RefCell<Node<'a>>>>>;
+
+struct TransformManager<'a> {
+	base: OwnedRoot<'a>,
+	cur: Option<OwnedRoot<'a>>,
+	next: Option<OwnedRoot<'a>>,
+}
+
+impl<'a> TransformManager<'a> {
+	fn new_owned_root(source: Box<dyn Source>, w: usize) -> OwnedRoot<'a> {
+		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().unwrap().root(), w)))) } )
+	}
+
+	pub fn new(source: Box<dyn Source>, w: usize) -> Self {
+		Self {
+			base: Self::new_owned_root(source, w),
+			cur: None,
+			next: None,
+		}
+	}
+
+	pub fn clear(&mut self) -> &Rc<RefCell<Node<'a>>> {
+		self.next = None;
+		self.cur = None;
+		&*self.base
+	}
+
+	pub fn propose(&mut self, q: &str, w: usize) -> Result<&Rc<RefCell<Node<'a>>>> {
+		match self.cur.as_ref().unwrap_or(&self.base).as_owner().transform(q) {
+			Ok(tree) => {
+				self.next = Some(Self::new_owned_root(tree, w));
+				Ok(&*(self.next.as_ref().unwrap()))
+			},
+			Err(error) => Err(error),
+		}
+	}
+
+	pub fn accept(&mut self) {
+		std::mem::swap(&mut self.cur, &mut self.next);
+		self.next = None;
+	}
+
+	pub fn reject(&mut self) -> &Rc<RefCell<Node<'a>>> {
+		self.next = None;
+		&*(self.cur.as_ref().unwrap_or(&self.base))
+	}
+}
+
 pub struct Tree<'a> {
+	source: TransformManager<'a>,
 	root: Rc<RefCell<Node<'a>>>,
 	sel: Weak<RefCell<Node<'a>>>,
 	size: curses::Size,
@@ -19,6 +70,7 @@ pub struct Tree<'a> {
 	down: bool,
 	query: Option<Regex>,
 	searchhist: Vec<String>,
+	xformhist: Vec<String>,
 	searchfwd: bool,
 	lastclick: time::Instant,
 	numbuf: Vec<char>,
@@ -26,13 +78,15 @@ pub struct Tree<'a> {
 }
 
 impl<'a> Tree<'a> {
-	pub fn new(json: Box<dyn Value<'a> + 'a>, colors: Vec<Color>) -> Result<Self> {
+	pub fn new(tree: Box<dyn Source>, colors: Vec<Color>) -> Result<Self> {
 		let size = curses::scrsize();
-		let root = Rc::new(RefCell::new(Node::new_root(json, size.w)));
+		let mut source = TransformManager::new(tree, size.w);
+		let root = Rc::clone(source.clear());
 		let mut fgcol = super::FG_COLORS.to_vec();
 		fgcol.extend(colors);
 		let palette = curses::Palette::new(fgcol, super::BG_COLORS.to_vec())?;
 		Ok(Tree {
+			source: source,
 			sel: Rc::downgrade(&root),
 			size: size,
 			start: Pos::new(Rc::downgrade(&root), 0),
@@ -40,6 +94,7 @@ impl<'a> Tree<'a> {
 			down: true,
 			query: None,
 			searchhist: vec![],
+			xformhist: vec![],
 			searchfwd: true,
 			lastclick: time::Instant::now().checked_sub(time::Duration::from_secs(60)).expect("This program cannot be run before January 2, 1970"),
 			numbuf: vec![],
@@ -280,7 +335,7 @@ impl<'a> Tree<'a> {
 	}
 
 	fn accordion(&mut self, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
-		ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
+		//ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
 		ncurses::refresh();
 		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
 		let lines_before = sel.borrow().lines() as isize;
@@ -296,7 +351,7 @@ impl<'a> Tree<'a> {
 		};
 		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
 		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
-		self.statline();
+		//self.statline();
 	}
 
 	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
@@ -397,13 +452,48 @@ impl<'a> Tree<'a> {
 			let searchhist = self.searchhist.clone(); // Any way to avoid these expensive clones?
 			// We should probably bubble up "non-internal" errors all the way up to the user, just to get nice error traces
 			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, if forward { "/" } else { "?" }, "", searchhist, incsearch, &palette).expect("Prompt failed");
-			if res == "" {
-				self.setquery(oldquery);
-			}
+			if res == "" { self.setquery(oldquery); }
 			else {
 				self.searchhist.push(res);
 				self.searchfwd = forward;
 				self.searchnext(1);
+			}
+		}
+	}
+
+	fn setroot(&mut self, root: Rc<RefCell<Node<'a>>>) {
+		self.root = root;
+		self.sel = Rc::downgrade(&self.root);
+		self.start = Pos::new(Rc::downgrade(&self.root), 0);
+		self.offset = 0;
+		self.down = true;
+		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
+		self.drawlines((0, self.size.h));
+	}
+
+	fn transform(&mut self, initq: &str) {
+		if self.check_term_size() {
+			let incxform = Box::new(|dt: &mut Tree, query: &str| {
+				let root = match dt.source.propose(query, dt.size.w) {
+					Ok(tree) => Rc::clone(tree),
+					Err(error) => {
+						let message = error.iter().fold("Error:".to_string(), |acc, x| acc + "\n" + &x.to_string()).to_string();
+						Rc::new(RefCell::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w)))
+					},
+				};
+				dt.setroot(root);
+			});
+			let size = self.size; // For borrowing
+			let palette = self.palette.clone();
+			let xformhist = self.xformhist.clone();
+			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, "|", initq, xformhist, incxform, &palette).expect("Prompt failed");
+			if res == "" {
+				let root = Rc::clone(self.source.reject());
+				self.setroot(Rc::clone(&root));
+			}
+			else {
+				self.source.accept();
+				self.xformhist.push(res);
 			}
 		}
 	}
@@ -519,13 +609,15 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
 		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
 		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
+		keys.register(&[&ncstr("|")], Box::new(|dt, _| { dt.transform(""); }));
+		keys.register(&[&ncstr("C")], Box::new(|dt, _| { let root = Rc::clone(dt.source.clear()); dt.setroot(root); }));
 		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
 		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); }));
 		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
 
 		self.resize();
-		self.accordion(&|mut sel, w| Node::toggle(&mut sel, w));
+		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
 		while !*done.borrow() {
 			let cmd = keys.wait(self);
 			if !digits.contains(&cmd) { self.clearnum(); }

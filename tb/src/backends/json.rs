@@ -104,6 +104,11 @@ impl Source for JsonSource {
 	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
 		Box::new(JsonValue { key: "root".to_string(), value: &self.json, parent: ParentType::Root })
 	}
+
+	fn transform(&self, transformation: &str) -> Result<Box<dyn Source>> {
+		let result = jq_rs::run(transformation, &self.json.to_string()).chain_err(|| "JQ filter failed")?;
+		Ok(Box::new(Self { json: serde_json::from_str(&result).chain_err(|| "JQ returned invalid JSON")? }))
+	}
 }
 
 pub struct JsonFactory { }
@@ -122,7 +127,7 @@ Provide the name of the input file to read as the sole command-line argument, or
 provide no arguments to read from standard input.
 
 Part of Tree Browser <https://github.com/showermat/tb>
-Copyright (GPLv3) 2019 Matthew Schauer
+Copyright (GPLv3) 2020 Matthew Schauer
 "#);
 				None
 			},
