@@ -30,7 +30,8 @@ impl<'a> Pos<'a> {
 				},
 			}
 		}
-		Some(ret + to.line - cur.line)
+		if ret + to.line >= cur.line { Some(ret + to.line - cur.line) }
+		else { None }
 	}
 
 	pub fn fwd(&self, n: usize, safe: bool) -> Self {

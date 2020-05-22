@@ -116,6 +116,7 @@ impl<'a> Node<'a> {
 		let contentw = screenwidth - ((maxdepth + 1) * COLWIDTH) % screenwidth;
 		self.cache.content = self.value.borrow().content().format(contentw, super::FG_COLORS.len());
 		self.cache.placeholder = self.value.borrow().placeholder().format(contentw, super::FG_COLORS.len());
+		self.cache.search = None;
 	}
 
 	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool) -> Self {
@@ -234,6 +235,13 @@ impl<'a> Node<'a> {
 		}
 		else if self.cache.search.is_some() {
 			self.cache.search = None;
+		}
+	}
+
+	pub fn matches(&self) -> bool {
+		match &self.cache.search {
+			None => false,
+			Some(search) => search.matches(),
 		}
 	}
 

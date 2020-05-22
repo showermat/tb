@@ -22,6 +22,9 @@ impl Search {
 	pub fn query(&self) -> Option<Regex> {
 		self.query.clone()
 	}
+	pub fn matches(&self) -> bool {
+		self.matches.iter().next().is_some()
+	}
 }
 
 pub struct Preformatted {

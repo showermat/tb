@@ -70,9 +70,11 @@ impl<'a, T> Prompt<'a, T> {
 			palette: palette,
 		})
 	}
+
 	fn goto(&self, offset: usize) {
 		ncurses::mv(self.location.0 as i32, (self.location.1 + self.promptw + offset) as i32);
 	}
+
 	fn do_callback(&mut self) -> Result<()> {
 		curses::prompt_off()?;
 		(*self.callback)(self.t, &self.buf.iter().collect::<String>());
@@ -80,6 +82,7 @@ impl<'a, T> Prompt<'a, T> {
 		self.goto(graphwidth(&self.buf[self.offset..self.pos]));
 		Ok(())
 	}
+
 	fn draw_from(&mut self, offset: usize) -> Result<()> {
 		let start = std::cmp::max(offset, self.offset);
 		let mut ret = vec![];
@@ -94,6 +97,7 @@ impl<'a, T> Prompt<'a, T> {
 		Output::write(&ret, &self.palette)?;
 		Ok(())
 	}
+
 	fn seek(&mut self, by: isize) -> Result<()> {
 		let ndelta = std::cmp::min(std::cmp::max(self.pos as isize + by, 0), self.buf.len() as isize) - self.pos as isize;
 		let delta = ndelta.abs() as usize;
@@ -144,6 +148,7 @@ impl<'a, T> Prompt<'a, T> {
 		else { self.pos -= delta; }
 		Ok(())
 	}
+
 	fn reset(&mut self, value: &str) -> Result<()> {
 		self.buf = value.chars().collect::<Vec<char>>();
 		self.pos = 0;
@@ -166,6 +171,7 @@ impl<'a, T> Prompt<'a, T> {
 		self.do_callback()?;
 		Ok(())
 	}
+
 	fn histseek(&mut self, by: isize) -> Result<()> {
 		let oldidx = self.histidx;
 		let newidx = std::cmp::max(std::cmp::min(oldidx as isize + by, self.history.len() as isize - 1), 0) as usize;
@@ -177,6 +183,7 @@ impl<'a, T> Prompt<'a, T> {
 		}
 		Ok(())
 	}
+
 	fn read(&mut self) -> Result<String> {
 		let init = self.history.last().ok_or("Prompt history is empty")?.clone();
 		self.reset(&init)?;

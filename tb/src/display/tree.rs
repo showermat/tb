@@ -1,6 +1,7 @@
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use std::time;
+use std::cmp;
 use std::collections::HashMap;
 use ::owning_ref::OwningHandle;
 use ::regex::Regex;
@@ -61,20 +62,19 @@ impl<'a> TransformManager<'a> {
 }
 
 pub struct Tree<'a> {
-	source: TransformManager<'a>,
-	root: Rc<RefCell<Node<'a>>>,
-	sel: Weak<RefCell<Node<'a>>>,
-	size: curses::Size,
-	start: Pos<'a>,
-	offset: isize,
-	down: bool,
-	query: Option<Regex>,
-	searchhist: Vec<String>,
-	xformhist: Vec<String>,
-	searchfwd: bool,
-	lastclick: time::Instant,
-	numbuf: Vec<char>,
-	palette: curses::Palette,
+	source: TransformManager<'a>, // Holds tree source and manages transformations
+	root: Rc<RefCell<Node<'a>>>, // Root node of the displayed tree
+	sel: Weak<RefCell<Node<'a>>>, // Currently selected node
+	size: curses::Size, // Terminal size
+	start: Pos<'a>, // Node and line corresponding to the top of the screen
+	offset: isize, // Line number of currently selected node (distance from start to first line of sel)
+	query: Option<Regex>, // Current search query
+	searchhist: Vec<String>, // Past search queries
+	xformhist: Vec<String>, // Past transformations
+	searchfwd: bool, // Whether the user is searching forward or backward
+	lastclick: time::Instant, // Time of the last click, for double-click detection
+	numbuf: Vec<char>, // Buffer for numbers entered to prefix a command
+	palette: curses::Palette, // Colors available for drawing this tree
 }
 
 impl<'a> Tree<'a> {
@@ -91,7 +91,6 @@ impl<'a> Tree<'a> {
 			size: size,
 			start: Pos::new(Rc::downgrade(&root), 0),
 			offset: 0,
-			down: true,
 			query: None,
 			searchhist: vec![],
 			xformhist: vec![],
@@ -158,13 +157,10 @@ impl<'a> Tree<'a> {
 	}
 
 	fn sellines(&self) -> (usize, usize) {
-		let offset = std::cmp::max(self.offset, 0) as usize;
 		let sel = self.sel.upgrade().expect("Couldn't get selection in sellines");
 		let lines = sel.borrow().lines();
-		match self.down {
-			false => (offset, std::cmp::min(offset + lines, self.size.h)),
-			true => (std::cmp::max(offset as isize - lines as isize + 1, 0) as usize, offset + 1),
-		}
+		//assert!(self.offset + lines as isize >= 0 && self.offset < self.size.h as isize);
+		(cmp::max(self.offset, 0) as usize, cmp::min((self.offset + lines as isize) as usize, self.size.h))
 	}
 
 	fn statline(&self) {
@@ -179,106 +175,88 @@ impl<'a> Tree<'a> {
 	}
 
 	fn scroll(&mut self, by: isize) -> isize {
-		match self.check_term_size() {
-			false => 0,
-			true => {
-				let oldsel = self.sel.clone();
-				let newstart = self.start.seek(by, true);
-				let diff = match by {
-					i if i > 0 => self.start.dist_fwd(newstart.clone()).expect("Seek returned an incorrect node") as isize,
-					i if i < 0 => -(newstart.dist_fwd(self.start.clone()).expect("Seek returned an incorrect nodee") as isize),
-					_ => 0,
-				};
-				let dist = diff.abs() as usize;
-				self.start = newstart;
-				self.offset -= diff;
-				if by > 0 {
-					while self.offset < 0 {
-						match self.down {
-							false => {
-								let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.offset += (sel.borrow().lines() - 1) as isize;
-								self.down = true
-							}
-							true => {
-								let sel1 = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.sel = sel1.borrow().next.clone();
-								let sel2 = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.offset += sel2.borrow().lines() as isize;
-							}
-						}
-					}
+		if self.check_term_size() && by != 0 {
+			let oldsel = self.sel.clone();
+			let newstart = self.start.seek(by, true);
+			let diff = match by {
+				i if i > 0 => self.start.dist_fwd(newstart.clone()).expect("Seek returned an incorrect node") as isize,
+				i if i < 0 => -(newstart.dist_fwd(self.start.clone()).expect("Seek returned an incorrect node") as isize),
+				_ => 0,
+			};
+			let dist = diff.abs() as usize;
+			self.start = newstart;
+			self.offset -= diff;
+			if by > 0 {
+				loop {
+					let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
+					let lines = sel.borrow().lines() as isize;
+					if self.offset + lines - 1 >= 0 { break; }
+					self.offset += lines;
+					self.sel = sel.borrow().next.clone();
 				}
-				else {
-					while self.offset >= self.size.h as isize {
-						match self.down {
-							true => {
-								let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.offset -= (sel.borrow().lines() - 1) as isize;
-								self.down = false;
-							}
-							false => {
-								let sel1 = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.sel = sel1.borrow().prev.clone();
-								let sel2 = self.sel.upgrade().expect("Couldn't get selection in scroll");
-								self.offset -= sel2.borrow().lines() as isize;
-							}
-						}
-					}
+			}
+			else {
+				while self.offset >= self.size.h as isize {
+					let oldsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
+					self.sel = oldsel.borrow().prev.clone();
+					let newsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
+					self.offset -= newsel.borrow().lines() as isize;
 				}
-				if dist >= self.size.h { self.drawlines((0, self.size.h)); }
-				else if diff != 0 {
-					if diff > 0 {
-						ncurses::scrl(dist as i32);
-						self.drawlines((self.size.h - dist, self.size.h));
-					}
-					else if diff < 0 {
-						ncurses::scrl(-(dist as i32));
-						self.drawlines((0, dist));
-					}
-					if !self.sel.ptr_eq(&oldsel) { self.drawlines(self.sellines()); }
+			}
+			if dist >= self.size.h { self.drawlines((0, self.size.h)); }
+			else if diff != 0 {
+				if diff > 0 {
+					ncurses::scrl(dist as i32);
+					self.drawlines((self.size.h - dist, self.size.h));
 				}
-				self.statline();
-				diff
-			},
+				else if diff < 0 {
+					ncurses::scrl(-(dist as i32));
+					self.drawlines((0, dist));
+				}
+				if !self.sel.ptr_eq(&oldsel) { self.drawlines(self.sellines()); }
+			}
+			self.statline();
+			diff
 		}
+		else { 0 }
 	}
 
-	fn select(&mut self, sel: Rc<RefCell<Node<'a>>>) -> isize {
+	fn select(&mut self, sel: Rc<RefCell<Node<'a>>>, scrollin: bool) -> isize {
 		if self.check_term_size() {
 			let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
 			let same = Rc::ptr_eq(&oldsel, &sel);
 			let down = oldsel.borrow().is_before(sel.clone());
 			let oldlines = self.sellines();
-			let curpos = match self.down {
-				true => oldsel.borrow().lines() - 1,
-				false => 0,
-			};
-			match down {
-				true => self.offset += Pos::new(self.sel.clone(), curpos).dist_fwd(Pos::new(Rc::downgrade(&sel), sel.borrow().lines() - 1))
+			self.offset += match down {
+				true => Pos::new(self.sel.clone(), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0))
 					.expect("Down is true but new selection not after old") as isize,
-				false => self.offset -= Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), curpos))
-					.expect("Down is false but new selection not before old") as isize,
+				false => -(Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), 0))
+					.expect("Down is false but new selection not before old") as isize),
 			};
-			self.down = down;
 			self.sel = Rc::downgrade(&sel);
-			let mut scrolldist = 0;
-			if self.offset < 0 { let sd = self.offset; scrolldist = self.scroll(sd); }
-			else if self.offset >= self.size.h as isize { let sd = self.offset - self.size.h as isize + 1; scrolldist = self.scroll(sd); }
-			else { self.statline(); }
+			let scrolldist = self.scroll({
+				let lines = sel.borrow().lines() as isize;
+				let off = self.offset;
+				let h = self.size.h as isize;
+				if scrollin && off < 0 { off + lines - h - cmp::min(lines - h, 0) }
+				else if scrollin && off + lines >= h { off + cmp::min(lines - h, 0) }
+				else if off + lines <= 0 { off + lines - 1 }
+				else if off >= h { off - h + 1 }
+				else { self.statline(); 0 }
+			});
 			if oldlines.0 as isize - scrolldist < self.size.h as isize && oldlines.1 as isize - scrolldist >= 0 && !same {
 				self.drawlines(( // Clear the old selection
-					std::cmp::max(oldlines.0 as isize - scrolldist, 0) as usize,
-					std::cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize
+					cmp::max(oldlines.0 as isize - scrolldist, 0) as usize,
+					cmp::min(oldlines.1 as isize - scrolldist, self.size.h as isize) as usize
 				));
 			}
 			if (scrolldist.abs() as usize) < self.size.h {
 				let mut sellines = self.sellines();
 				if scrolldist > 0 {
-					sellines = (std::cmp::min(sellines.0, self.size.h - scrolldist as usize), std::cmp::min(sellines.1, self.size.h - scrolldist as usize));
+					sellines = (cmp::min(sellines.0, self.size.h - scrolldist as usize), cmp::min(sellines.1, self.size.h - scrolldist as usize));
 				}
 				else if scrolldist < 0 {
-					sellines = (std::cmp::max(sellines.0, -scrolldist as usize), std::cmp::max(sellines.1, -scrolldist as usize));
+					sellines = (cmp::max(sellines.0, -scrolldist as usize), cmp::max(sellines.1, -scrolldist as usize));
 				}
 				if sellines.0 < sellines.1 && !same { self.drawlines(sellines); }
 			}
@@ -310,54 +288,41 @@ impl<'a> Tree<'a> {
 			self.foreach(&|n: &mut Node| n.reformat(w));
 			self.start = Pos::new(self.start.node.clone(), 0).fwd(self.start.line, true);
 			let sel = self.sel.upgrade().expect("Couldn't get selection in resize");
-			let line = match self.down {
-				false => 0,
-				true => sel.borrow().lines() - 1,
-			};
 			// If `start` is the last line of a multi-line wrapped node, but we make the terminal
 			// wider and the node unwraps to fewer lines, `sel` will now be before `start`.
-			let curpos = Pos::new(self.sel.clone(), line);
+			let curpos = Pos::new(self.sel.clone(), 0);
 			self.offset = {
 				let fwd = self.start.dist_fwd(curpos.clone()).map(|x| x as isize);
 				if let Some(ret) = fwd { ret }
 				else { -(curpos.dist_fwd(self.start.clone()).expect("Could not determine new offset in resize") as isize) }
 			};
-			// TODO If start.node == sel and sel is multi-line, then on each resize we'll jump to
-			// the top of sel, which is not terrible but perhaps not desirable
-			self.select(sel);
+			self.select(sel, false);
 			self.redraw();
 		}
 	}
 
 	fn selpos(&mut self, line: usize) {
 		let target = self.start.fwd(line, true).node.upgrade().expect("Tried to select invalid line");
-		self.select(target);
+		self.select(target, true);
 	}
 
 	fn accordion(&mut self, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
 		//ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
 		ncurses::refresh();
 		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
-		let lines_before = sel.borrow().lines() as isize;
 		let mut maxend = Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
 		let w = self.size.w;
 		op(&mut sel, w);
-		let lines_after = sel.borrow().lines() as isize;
-		maxend = std::cmp::max(maxend, Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
-		if self.down { self.offset += lines_after - lines_before; }
-		let drawstart = match self.down {
-			true => self.offset - lines_after + 1,
-			false => self.offset,
-		};
+		maxend = cmp::max(maxend, Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
 		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
-		self.drawlines((drawstart as usize, std::cmp::min(self.size.h, self.offset as usize + maxend)));
-		//self.statline();
+		let startoff = cmp::max(self.offset, 0) as usize;
+		self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend)));
 	}
 
 	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
 		// We can try doing fancier things down the line, but for now select the node being
 		// refreshed to avoid dealing with a selection that no longer exists
-		self.select(node.clone());
+		self.select(node.clone(), false);
 		self.accordion(&|node, w| Node::refresh(node, w));
 	}
 
@@ -428,14 +393,14 @@ impl<'a> Tree<'a> {
 				let target = n.borrow().children[i].clone();
 				n = target;
 			}
-			let mut lastline = std::cmp::min(self.start.dist_fwd(Pos::nil()).expect("Couldn't find distance from start to end"), self.size.h) as isize;
-			let scrolldist = self.select(n);
+			let mut lastline = cmp::min(self.start.dist_fwd(Pos::nil()).expect("Couldn't find distance from start to end"), self.size.h) as isize;
+			let scrolldist = self.select(n, true);
 			if let Some(mut first) = firstline {
 				if (scrolldist.abs() as usize) < self.size.h {
 					first -= scrolldist;
 					lastline -= scrolldist;
 					if first < self.size.h as isize && lastline >= 0 {
-						self.drawlines((std::cmp::max(first, 0) as usize, std::cmp::min(lastline as usize, self.size.h)));
+						self.drawlines((cmp::max(first, 0) as usize, cmp::min(lastline as usize, self.size.h)));
 					}
 				}
 			}
@@ -456,7 +421,8 @@ impl<'a> Tree<'a> {
 			else {
 				self.searchhist.push(res);
 				self.searchfwd = forward;
-				self.searchnext(1);
+				let sel = self.sel.upgrade().expect("Couldn't get selection in search");
+				if !sel.borrow().matches() { self.searchnext(1); }
 			}
 		}
 	}
@@ -466,7 +432,6 @@ impl<'a> Tree<'a> {
 		self.sel = Rc::downgrade(&self.root);
 		self.start = Pos::new(Rc::downgrade(&self.root), 0);
 		self.offset = 0;
-		self.down = true;
 		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
 		self.drawlines((0, self.size.h));
 	}
@@ -587,13 +552,13 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
-		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone()); dt.select(sel); }));
-		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone()); dt.select(sel); }));
-		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone()); dt.select(sel); }));
-		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prevsib.clone()); dt.select(sel); }));
-		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().parent.clone()); dt.select(sel); }));
-		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.root.clone(); dt.select(sel); }));
-		keys.register(&[&ncstr("G"), &[ncurses::KEY_END]], Box::new(|dt, _| { let sel = dt.last(); dt.select(sel); }));
+		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prevsib.clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().parent.clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.root.clone(); dt.select(sel, true); }));
+		keys.register(&[&ncstr("G"), &[ncurses::KEY_END]], Box::new(|dt, _| { let sel = dt.last(); dt.select(sel, true); }));
 		keys.register(&[&ncstr("H")], Box::new(|dt, _| { dt.selpos(0); }));
 		keys.register(&[&ncstr("M")], Box::new(|dt, _| { let pos = dt.size.h / 2; dt.selpos(pos); }));
 		keys.register(&[&ncstr("L")], Box::new(|dt, _| { let pos = dt.size.h - 1; dt.selpos(pos); }));
@@ -603,7 +568,7 @@ impl<'a> Tree<'a> {
 		keys.register(&[&[0x15]], Box::new(|dt, _| { let dist = dt.getnum() * dt.size.h / 2; dt.scroll(-(dist as isize)); })); // ^U
 		keys.register(&[&[0x5]], Box::new(|dt, _| { dt.scroll(1); })); // ^E
 		keys.register(&[&[0x19]], Box::new(|dt, _| { dt.scroll(-1); })); // ^Y
-		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset as isize - (dt.size.h as isize) / 2; dt.scroll(dist); }));
+		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset - (dt.size.h as isize) / 2; dt.scroll(dist); }));
 		keys.register(&[&ncstr("/")], Box::new(|dt, _| { dt.search(true); }));
 		keys.register(&[&ncstr("?")], Box::new(|dt, _| { dt.search(false); }));
 		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
