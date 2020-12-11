@@ -22,13 +22,13 @@ struct TransformManager<'a> {
 }
 
 impl<'a> TransformManager<'a> {
-	fn new_owned_root(source: Box<dyn Source>, w: usize) -> OwnedRoot<'a> {
-		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().unwrap().root(), w)))) } )
+	fn new_owned_root(source: Box<dyn Source>, w: usize, hideroot: bool) -> OwnedRoot<'a> {
+		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().unwrap().root(), w, hideroot)))) } )
 	}
 
-	pub fn new(source: Box<dyn Source>, w: usize) -> Self {
+	pub fn new(source: Box<dyn Source>, w: usize, hideroot: bool) -> Self {
 		Self {
-			base: Self::new_owned_root(source, w),
+			base: Self::new_owned_root(source, w, hideroot),
 			cur: None,
 			next: None,
 		}
@@ -40,10 +40,10 @@ impl<'a> TransformManager<'a> {
 		&*self.base
 	}
 
-	pub fn propose(&mut self, q: &str, w: usize) -> Result<&Rc<RefCell<Node<'a>>>> {
+	pub fn propose(&mut self, q: &str, w: usize, hideroot: bool) -> Result<&Rc<RefCell<Node<'a>>>> {
 		match self.cur.as_ref().unwrap_or(&self.base).as_owner().transform(q) {
 			Ok(tree) => {
-				self.next = Some(Self::new_owned_root(tree, w));
+				self.next = Some(Self::new_owned_root(tree, w, hideroot));
 				Ok(&*(self.next.as_ref().unwrap()))
 			},
 			Err(error) => Err(error),
@@ -75,12 +75,13 @@ pub struct Tree<'a> {
 	lastclick: time::Instant, // Time of the last click, for double-click detection
 	numbuf: Vec<char>, // Buffer for numbers entered to prefix a command
 	palette: curses::Palette, // Colors available for drawing this tree
+	settings: Settings,
 }
 
 impl<'a> Tree<'a> {
-	pub fn new(tree: Box<dyn Source>, colors: Vec<Color>) -> Result<Self> {
+	pub fn new(tree: Box<dyn Source>, colors: Vec<Color>, settings: Settings) -> Result<Self> {
 		let size = curses::scrsize();
-		let mut source = TransformManager::new(tree, size.w);
+		let mut source = TransformManager::new(tree, size.w, settings.hide_root);
 		let root = Rc::clone(source.clear());
 		let mut fgcol = super::FG_COLORS.to_vec();
 		fgcol.extend(colors);
@@ -99,15 +100,25 @@ impl<'a> Tree<'a> {
 			numbuf: vec![],
 			palette: palette,
 			root: root,
+			settings: settings,
 		})
+	}
+
+	fn first(&self) -> Rc<RefCell<Node<'a>>> {
+		let mut cur = self.root.clone();
+		while cur.borrow().lines() == 0 {
+			if let Some(next) = Node::next(&cur).upgrade() { cur = next; }
+			else { return self.root.clone(); }
+		}
+		cur
 	}
 
 	fn last(&self) -> Rc<RefCell<Node<'a>>> {
 		let mut cur = self.root.clone();
 		loop {
 			let new =
-				if let Some(nextsib) = cur.borrow().nextsib.upgrade() { Some(nextsib) }
-				else if let Some(next) = cur.borrow().next.upgrade() { Some(next) }
+				if let Some(nextsib) = Node::nextsib(&cur).upgrade() { Some(nextsib) }
+				else if let Some(next) = Node::next(&cur).upgrade() { Some(next) }
 				else { None };
 			if let Some(n) = new { cur = n; }
 			else { break; }
@@ -192,13 +203,13 @@ impl<'a> Tree<'a> {
 					let lines = sel.borrow().lines() as isize;
 					if self.offset + lines - 1 >= 0 { break; }
 					self.offset += lines;
-					self.sel = sel.borrow().next.clone();
+					self.sel = Node::next(&sel).clone();
 				}
 			}
 			else {
 				while self.offset >= self.size.h as isize {
 					let oldsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
-					self.sel = oldsel.borrow().prev.clone();
+					self.sel = Node::prev(&oldsel).clone();
 					let newsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
 					self.offset -= newsel.borrow().lines() as isize;
 				}
@@ -238,11 +249,12 @@ impl<'a> Tree<'a> {
 				let lines = sel.borrow().lines() as isize;
 				let off = self.offset;
 				let h = self.size.h as isize;
-				if scrollin && off < 0 { off + lines - h - cmp::min(lines - h, 0) }
+				if lines == 0 { if scrollin { self.statline(); } 0 }
+				else if scrollin && off < 0 { off + lines - h - cmp::min(lines - h, 0) }
 				else if scrollin && off + lines >= h { off + cmp::min(lines - h, 0) }
 				else if off + lines <= 0 { off + lines - 1 }
 				else if off >= h { off - h + 1 }
-				else { self.statline(); 0 }
+				else { if scrollin { self.statline(); } 0 }
 			});
 			if oldlines.0 as isize - scrolldist < self.size.h as isize && oldlines.1 as isize - scrolldist >= 0 && !same {
 				self.drawlines(( // Clear the old selection
@@ -269,7 +281,7 @@ impl<'a> Tree<'a> {
 		let mut cur = Rc::downgrade(&self.root);
 		while let Some(n) = cur.upgrade() {
 			f(&mut n.borrow_mut());
-			cur = n.borrow().next.clone();
+			cur = Node::next(&n).clone();
 		}
 	}
 
@@ -322,7 +334,8 @@ impl<'a> Tree<'a> {
 	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
 		// We can try doing fancier things down the line, but for now select the node being
 		// refreshed to avoid dealing with a selection that no longer exists
-		self.select(node.clone(), false);
+		if Rc::ptr_eq(node, &self.root) { self.select(self.first(), false); }
+		else { self.select(node.clone(), false); }
 		self.accordion(&|node, w| Node::refresh(node, w));
 	}
 
@@ -358,7 +371,7 @@ impl<'a> Tree<'a> {
 				}
 			}
 			line += cur.borrow().lines() as isize;
-			let next = cur.borrow().next.upgrade();
+			let next = Node::next(&cur).upgrade();
 			match next {
 				None => break,
 				Some(n) => cur = n,
@@ -377,7 +390,7 @@ impl<'a> Tree<'a> {
 			let mut firstline: Option<isize> = None;
 			for i in path {
 				if n.borrow().expandable() && !n.borrow().expanded {
-					let nextsib_pos = Pos::new(n.borrow().nextsib.clone(), 0);
+					let nextsib_pos = Pos::new(Node::nextsib(&n).clone(), 0);
 					if firstline.is_none() {
 						firstline = self.start.dist_fwd(nextsib_pos.clone()).map(|x| x as isize - 1);
 					}
@@ -433,17 +446,18 @@ impl<'a> Tree<'a> {
 		self.start = Pos::new(Rc::downgrade(&self.root), 0);
 		self.offset = 0;
 		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
+		self.select(self.first(), false);
 		self.drawlines((0, self.size.h));
 	}
 
 	fn transform(&mut self, initq: &str) {
 		if self.check_term_size() {
 			let incxform = Box::new(|dt: &mut Tree, query: &str| {
-				let root = match dt.source.propose(query, dt.size.w) {
+				let root = match dt.source.propose(query, dt.size.w, dt.settings.hide_root) {
 					Ok(tree) => Rc::clone(tree),
 					Err(error) => {
 						let message = error.iter().fold("Error:".to_string(), |acc, x| acc + "\n" + &x.to_string()).to_string();
-						Rc::new(RefCell::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w)))
+						Rc::new(RefCell::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w, false)))
 					},
 				};
 				dt.setroot(root);
@@ -552,12 +566,12 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
-		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().prevsib.clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| n.borrow().parent.clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.root.clone(); dt.select(sel, true); }));
+		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::next(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::prev(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::nextsib(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::prevsib(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::parent(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.first(); dt.select(sel, true); }));
 		keys.register(&[&ncstr("G"), &[ncurses::KEY_END]], Box::new(|dt, _| { let sel = dt.last(); dt.select(sel, true); }));
 		keys.register(&[&ncstr("H")], Box::new(|dt, _| { dt.selpos(0); }));
 		keys.register(&[&ncstr("M")], Box::new(|dt, _| { let pos = dt.size.h / 2; dt.selpos(pos); }));
@@ -583,6 +597,7 @@ impl<'a> Tree<'a> {
 
 		self.resize();
 		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
+		self.select(self.first(), false);
 		while !*done.borrow() {
 			let cmd = keys.wait(self);
 			if !digits.contains(&cmd) { self.clearnum(); }

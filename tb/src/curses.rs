@@ -231,22 +231,26 @@ pub enum Output {
 impl Output {
 	pub fn write(line: &[Output], p: &Palette) -> Result<()> {
 		let (mut curfg, mut curbg) = (0, 0);
+		let mut wrap = false;
 		line.iter().for_each(|elem| {
 			match elem {
-				Output::Str(s) => { addstr(&s); },
+				Output::Str(s) => {
+					if s != "" {
+						wrap = false;
+						addstr(&s);
+						// This is an unfortunate hack to ensure that if a fill is requested after the
+						// line it was intended for is filled and the cursor has wrapped around to the
+						// next line, we don't inadvertently wipe out the following line.
+						if curpos().1 == 0 { wrap = true; }
+					}
+				},
 //				Output::AttrOn(a) => { ncurses::attr_on(*a); },
 //				Output::AttrOff(a) => { ncurses::attr_off(*a); },
 				Output::Fg(c) => { curfg = *c; p.set(curfg, curbg, ' '); },
 				Output::Bg(c) => { curbg = *c; p.set(curfg, curbg, ' '); },
 //				Output::Move(y, x) => { ncurses::mv(*y as i32, *x as i32); },
 				Output::Fill(c) => {
-					// This is an unfortunate hack to ensure that if a fill is requested after the
-					// line it was intended for is filled and the cursor has wrapped around to the
-					// next line, we don't inadvertently wipe out the following line.  For our
-					// purposes, it works.
-					if curpos().1 != 0 {
-						p.set(curfg, curbg, *c); clrtoeol();
-					}
+					if !wrap { p.set(curfg, curbg, *c); clrtoeol(); }
 				},
 			}
 		});

@@ -332,6 +332,7 @@ impl FmtCmd {
 		if ret.raw.last() == Some(&"".to_string()) { // Ick.  This is necessary because searching for anchors (^ and $) causes a panic if we leave empty strings in the raw
 			ret.raw.pop();
 		}
+		if ret.len() == 0 { ret.content.push(vec![]); }
 		if DEBUG {
 			eprintln!("RAW");
 			ret.raw.iter().enumerate().for_each(|(i, x)| eprintln!("\t{}: {:?}", i, x));

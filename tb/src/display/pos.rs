@@ -1,6 +1,7 @@
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use super::node::Node;
+use std::cmp;
 
 #[derive(Clone)]
 pub struct Pos<'a> {
@@ -26,7 +27,7 @@ impl<'a> Pos<'a> {
 				None => return None,
 				Some(n) => {
 					ret += n.borrow().lines() - cur.line;
-					cur = Pos::new(n.borrow().next.clone(), 0);
+					cur = Pos::new(n.borrow().raw_next().clone(), 0);
 				},
 			}
 		}
@@ -41,15 +42,18 @@ impl<'a> Pos<'a> {
 			match cur.node.upgrade() {
 				None => return Pos::nil(),
 				Some(node) => {
-					if remain < node.borrow().lines() - cur.line { break; }
-					if node.borrow().next.upgrade().is_none() {
-						match safe {
+					let curlines = node.borrow().lines();
+					if remain < curlines - cur.line { break; }
+					match Node::next(&node).upgrade() {
+						None => match safe {
 							false => return Pos::nil(),
-							true => return Pos::new(cur.node, node.borrow().lines() - 1),
+							true => return Pos::new(cur.node, cmp::max(curlines, 1) - 1),
+						},
+						Some(realnext) => {
+							remain -= curlines - cur.line;
+							cur = Pos::new(Rc::downgrade(&realnext), 0);
 						}
 					}
-					remain -= node.borrow().lines() - cur.line;
-					cur = Pos::new(node.borrow().next.clone(), 0);
 				}
 			}
 		}
@@ -64,7 +68,7 @@ impl<'a> Pos<'a> {
 				None => return Pos::nil(),
 				Some(node) => {
 					if remain <= cur.line { break; }
-					match node.borrow().prev.upgrade() {
+					match Node::prev(&node).upgrade() {
 						None => {
 							match safe {
 								false => return Pos::nil(),
@@ -73,7 +77,7 @@ impl<'a> Pos<'a> {
 						},
 						Some(prev) => {
 							remain -= cur.line + 1;
-							cur = Pos::new(node.borrow().prev.clone(), prev.borrow().lines() - 1)
+							cur = Pos::new(Rc::downgrade(&prev), cmp::max(prev.borrow().lines(), 1) - 1)
 						}
 					}
 				}

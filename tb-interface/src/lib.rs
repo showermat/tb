@@ -37,6 +37,16 @@ pub mod errors {
 	error_chain! { }
 }
 
+/// This allows the plugin being used to configure certain aspects of the display tree's behavior.
+pub struct Settings {
+	/// Hide the root level of the tree.  If the root does not contain any useful information and
+	/// will always have children, it is sometimes more intuitive to hide the top level, making it
+	/// appear like each child is its own independent root.
+	pub hide_root: bool,
+}
+
+/// Small enum used when a rendering mode needs to be selected.  Backend values can be rendered
+/// normally for display, or differently for search and clipboard-copy purposes.
 #[derive(EnumFlags, Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
 pub enum Render {
@@ -130,6 +140,7 @@ pub trait Source {
 	fn transform(&self, _transformation: &str) -> errors::Result<Box<dyn Source>> { Err(errors::Error::from("This source does not implement transformations")) }
 }
 
+/// Basic information about a backend.
 pub struct Info {
 	pub name: &'static str,
 	pub desc: &'static str,
@@ -155,7 +166,19 @@ pub trait Factory {
 	/// will print an error trace and abort.  Otherwise, return `Some(Ok(Box<Source>))` and TB will
 	/// enter interactive mode.
 	fn from(&self, &[&str]) -> Option<errors::Result<Box<dyn Source>>>;
+
+	/// Return a list of colors to be used in rendering the tree.  This sets the internal palette
+	/// used by the tree.  A color can then be used by specifying its index in this vector in the
+	/// `Format::Color` variant.
 	fn colors(&self) -> Vec<Color> { vec![] }
+
+	/// Configure how the tree is to render this backend.  See the `Settings` documentation for
+	/// more information.
+	fn settings(&self) -> Settings {
+		Settings {
+			hide_root: false,
+		}
+	}
 }
 
 /// Formatting shortcuts to make tree-building easier.  You can `use` the `fmt` module, and then

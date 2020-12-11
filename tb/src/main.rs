@@ -106,6 +106,7 @@ fn run() -> Result<()> {
 	let builtin_backends = vec![
 		backends::json::get_factory(),
 		backends::fs::get_factory(),
+		backends::txt::get_factory(),
 	];
 	let (plugins, load_errors) = extract_errors(load_plugins().unwrap_or(vec![])); // Do NOT consume `plugins`!  Use `iter`, not `into_iter`.  Otherwise the symbols extracted from it will end up with dangling pointers and you have fun segfault time.
 	let (plugin_backends, factory_errors) = extract_errors(plugins.iter().map(|(path, lib)| unsafe {
@@ -149,7 +150,7 @@ fn run() -> Result<()> {
 	if let Some(treeres) = factory.from(subargs) {
 		let tree = treeres?;
 		curses::setup()?;
-		let mut dt = display::Tree::new(tree, factory.colors())?;
+		let mut dt = display::Tree::new(tree, factory.colors(), factory.settings())?;
 		if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dt.interactive())) {
 			let _ = curses::cleanup();
 			std::panic::resume_unwind(e);

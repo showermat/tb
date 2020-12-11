@@ -17,30 +17,31 @@ struct NodeCache {
 
 pub struct Node<'a> {
 	pub children: Vec<Rc<RefCell<Node<'a>>>>,
-	pub parent: Weak<RefCell<Node<'a>>>,
-	pub prev: Weak<RefCell<Node<'a>>>,
-	pub next: Weak<RefCell<Node<'a>>>,
-	pub prevsib: Weak<RefCell<Node<'a>>>,
-	pub nextsib: Weak<RefCell<Node<'a>>>,
+	parent: Weak<RefCell<Node<'a>>>,
+	prev: Weak<RefCell<Node<'a>>>,
+	next: Weak<RefCell<Node<'a>>>,
+	prevsib: Weak<RefCell<Node<'a>>>,
+	nextsib: Weak<RefCell<Node<'a>>>,
 	pub expanded: bool,
 	last: bool,
 	value: Rc<RefCell<Value<'a>>>,
 	cache: NodeCache,
+	hide: bool,
 }
 
 impl<'a> Node<'a> {
 	pub fn depth(&self) -> usize {
 		match self.parent.upgrade() {
 			None => 0,
+			Some(p) if p.borrow().hide => p.borrow().depth(),
 			Some(p) => p.borrow().depth() + 1,
 		}
 	}
 
 	pub fn lines(&self) -> usize {
-		match self.expanded {
-			true => self.cache.placeholder.len(),
-			false => self.cache.content.len(),
-		}
+		if self.hide { 0 }
+		else if self.expanded { self.cache.placeholder.len() }
+		else { self.cache.content.len() }
 	}
 
 	/* Things I dislike about Rust:
@@ -86,11 +87,17 @@ impl<'a> Node<'a> {
 		 * and make everything look more complicated than it really is.
 		 */
 		fn parent_prefix(n: &Node, depth: usize, maxdepth: usize) -> String {
-			if n.parent.upgrade().is_none() || depth > maxdepth { "".to_string() }
+			if depth > maxdepth { "".to_string() }
 			else {
-				let parent = n.parent.upgrade().expect("Couldn't get parent node in prefix");
-				if n.last { parent_prefix(&parent.borrow(), depth + 1, maxdepth) + &repeat(" ", COLWIDTH) }
-				else { parent_prefix(&parent.borrow(), depth + 1, maxdepth) + "│" + &repeat(" ", COLWIDTH - 1) }
+				match n.parent.upgrade() {
+					None => "".to_string(),
+					Some(parent) => {
+						let ppref = parent_prefix(&parent.borrow(), depth + 1, maxdepth);
+						if parent.borrow().hide { ppref }
+						else if n.last { ppref  + &repeat(" ", COLWIDTH) }
+						else { ppref + "│" + &repeat(" ", COLWIDTH - 1) }
+					},
+				}
 			}
 		}
 		fn cur_prefix(n: &Node, maxdepth: usize) -> String {
@@ -98,7 +105,9 @@ impl<'a> Node<'a> {
 				None => "".to_string(),
 				Some(parent) => {
 					let branch = if n.last { "└".to_string() } else { "├".to_string() };
-					parent_prefix(&parent.borrow(), 1, maxdepth) + &branch + &repeat("─", COLWIDTH - 2) + " "
+					let ppref = parent_prefix(&parent.borrow(), 1, maxdepth);
+					if parent.borrow().hide { ppref }
+					else { ppref + &branch + &repeat("─", COLWIDTH - 2) + " " }
 				}
 			}
 		}
@@ -119,7 +128,7 @@ impl<'a> Node<'a> {
 		self.cache.search = None;
 	}
 
-	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool) -> Self {
+	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool, hide: bool) -> Self {
 		let mut ret = Node {
 			children: vec![],
 			parent: parent,
@@ -137,27 +146,65 @@ impl<'a> Node<'a> {
 				content: Preformatted::new(0),
 				search: None,
 			},
+			hide: hide,
 		};
 		ret.reformat(width);
 		ret
 	}
 
-	pub fn new_root(val: Box<dyn BackendValue<'a> + 'a>, width: usize) -> Self {
-		Self::new(Weak::new(), Value::new_root(val), width, true)
+	pub fn new_root(val: Box<dyn BackendValue<'a> + 'a>, width: usize, hide: bool) -> Self {
+		Self::new(Weak::new(), Value::new_root(val), width, true, hide)
 	}
 
+	fn traverse_unhidden(start: &Rc<RefCell<Node<'a>>>, op: &dyn Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		let mut cur = op(&start);
+		loop {
+			match cur.upgrade() {
+				None => return cur,
+				Some(node) => {
+					if node.borrow().lines() > 0 { return Rc::downgrade(&node); }
+					else { cur = op(&node); }
+				},
+			}
+		}
+	}
+
+	pub fn parent(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().parent.clone())
+	}
+	
+	pub fn next(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone())
+	}
+	
+	pub fn prev(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone())
+	}
+	
+	pub fn nextsib(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone())
+	}
+
+	pub fn prevsib(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().prevsib.clone())
+	}
+
+	pub fn raw_next(&self) -> Weak<RefCell<Node<'a>>> {
+		self.next.clone()
+	}
+	
 	pub fn expandable(&self) -> bool {
 		self.value.borrow().expandable()
 	}
 
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() && !this.borrow().expanded {
-			if Value::children(&this.borrow().value).len() > 0 {
+			let children = Value::children(&this.borrow().value);
+			if children.len() > 0 {
 				let mut cur = this.clone();
-				let lastidx = Value::children(&this.borrow().value).len() - 1;
-				let children = Value::children(&this.borrow().value);
+				let lastidx = children.len() - 1;
 				for (i, child) in children.into_iter().enumerate() {
-					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx)));
+					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx, false)));
 					this.borrow_mut().children.push(node.clone());
 					Self::insert(&mut cur, &mut node);
 					cur = node;

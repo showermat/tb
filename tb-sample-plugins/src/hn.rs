@@ -162,4 +162,11 @@ impl Factory for HnFactory {
 			Color { c8: 4, c256: 244 }, // muted
 		]
 	}
+
+	// TODO: hide root, try showing only first comment line when collapsed
+	//fn settings(&self) -> Settings {
+	//	Settings {
+	//		hide_root: true,
+	//	}
+	//}
 }

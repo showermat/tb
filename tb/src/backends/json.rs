@@ -24,20 +24,7 @@ pub struct JsonValue<'a> {
 
 impl<'a> JsonValue<'a> {
 	fn fmtstr(s: &str) -> Format {
-		let mut parts = vec![];
-		let mut cur = "".to_string();
-		for c in s.chars() {
-			match c as i32 {
-				0..=8 | 11..=31 | 127 => {
-					let ctrlchar = (((c as i32 + 64) % 128) as u8 as char).to_string();
-					parts.extend(vec![lit(&cur), nosearch(nobreak(color(HI_KWD, lit(&("^".to_string() + &ctrlchar)))))]);
-					cur = "".to_string();
-				},
-				_ => cur.push(c),
-			};
-		}
-		if cur.len() > 0 { parts.push(lit(&cur)); }
-		cat(parts)
+		super::fmtstr(s, HI_KWD)
 	}
 
 	fn fmtkey(&self) -> Format {
