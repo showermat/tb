@@ -164,9 +164,9 @@ impl Factory for HnFactory {
 	}
 
 	// TODO: hide root, try showing only first comment line when collapsed
-	//fn settings(&self) -> Settings {
-	//	Settings {
-	//		hide_root: true,
-	//	}
-	//}
+	fn settings(&self) -> Settings {
+		Settings {
+			hide_root: true,
+		}
+	}
 }

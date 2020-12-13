@@ -316,6 +316,13 @@ impl<'a> Node<'a> {
 		false
 	}
 
+	pub fn is_ancestor_of(&self, n: Rc<RefCell<Node>>) -> bool {
+		let (path1, path2) = (self.value.borrow().path(), n.borrow().value.borrow().path());
+		if path1.len() >= path2.len() { false }
+		else if path2[..path1.len()] != path1[..] { false }
+		else { true }
+	}
+
 	pub fn invoke(&self) {
 		self.value.borrow().invoke();
 	}

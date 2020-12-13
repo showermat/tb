@@ -318,25 +318,57 @@ impl<'a> Tree<'a> {
 		self.select(target, true);
 	}
 
-	fn accordion(&mut self, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
-		//ncurses::mvaddstr(self.size.h as i32, 0, "Loading...");
+	fn accordion(&mut self, mut node: &mut Rc<RefCell<Node<'a>>>, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
 		ncurses::refresh();
-		let mut sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
-		let mut maxend = Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
-		let w = self.size.w;
-		op(&mut sel, w);
-		maxend = cmp::max(maxend, Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
-		// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
-		let startoff = cmp::max(self.offset, 0) as usize;
-		self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend)));
+		let start = self.start.node.upgrade().expect("Couldn't get start node in accordion");
+		let sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
+		if node.borrow().is_before(start.clone()) {
+			if node.borrow().is_ancestor_of(start) {
+				if node.borrow().is_ancestor_of(sel.clone()) {
+					self.select(node.clone(), true); // TODO Use path resolution to select a new sel
+					op(&mut node, self.size.w);
+				}
+				else {
+					let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
+					op(&mut node, self.size.w);
+					let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
+					let diff = newoff.unwrap() as isize - oldoff.unwrap() as isize;
+					self.offset += diff;
+					self.start = Pos::new(Rc::downgrade(&sel), 0).seek(-self.offset, true);
+					self.scroll(diff);
+				}
+				self.redraw();
+			}
+			else { op(&mut node, self.size.w); }
+		}
+		else if self.start.fwd(self.size.h - 1, true).node.upgrade().unwrap().borrow().is_before(node.clone()) { op(&mut node, self.size.w); }
+		else if node.borrow().is_before(sel.clone()) {
+			if node.borrow().is_ancestor_of(sel.clone()) {
+				self.select(node.clone(), true); // TODO Use path resolution to select a new sel
+				op(&mut node, self.size.w);
+			}
+			else {
+				let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
+				op(&mut node, self.size.w);
+				let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
+				let diff = newoff.unwrap() as isize - oldoff.unwrap() as isize;
+				self.offset += diff;
+				self.scroll(diff);
+			}
+			self.redraw();
+		}
+		else {
+			let mut maxend = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
+			op(&mut node, self.size.w);
+			maxend = cmp::max(maxend, Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
+			// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
+			let startoff = cmp::max(self.offset, 0) as usize;
+			self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend)));
+		}
 	}
 
 	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
-		// We can try doing fancier things down the line, but for now select the node being
-		// refreshed to avoid dealing with a selection that no longer exists
-		if Rc::ptr_eq(node, &self.root) { self.select(self.first(), false); }
-		else { self.select(node.clone(), false); }
-		self.accordion(&|node, w| Node::refresh(node, w));
+		self.accordion(node, &|n, w| Node::refresh(n, w));
 	}
 
 	fn query_from_str(query: &str) -> Option<Regex> {
@@ -445,7 +477,7 @@ impl<'a> Tree<'a> {
 		self.sel = Rc::downgrade(&self.root);
 		self.start = Pos::new(Rc::downgrade(&self.root), 0);
 		self.offset = 0;
-		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
+		self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
 		self.drawlines((0, self.size.h));
 	}
@@ -488,7 +520,7 @@ impl<'a> Tree<'a> {
 		let oldsel = self.sel.clone();
 		self.selpos(y);
 		if oldsel.ptr_eq(&self.sel) && now.duration_since(self.lastclick).as_millis() < 400 {
-			self.accordion(&|mut sel, w| Node::toggle(&mut sel, w));
+			self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::toggle(&mut sel, w));
 			self.lastclick = now.checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"); // Epoch would be better
 		}
 		else { self.lastclick = now; }
@@ -559,10 +591,10 @@ impl<'a> Tree<'a> {
 
 		keys.register(&[&[ncurses::KEY_RESIZE]], Box::new(|dt, _| { dt.resize(); }));
 		keys.register(&[&[ncurses::KEY_MOUSE]], Box::new(|dt, _| dt.mouse(curses::mouseevents())));
-		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&|mut sel, w| Node::toggle(&mut sel, w))));
-		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&|mut sel, w| Node::recursive_expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&|mut sel, w| Node::expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&|mut sel, _| Node::collapse(&mut sel))));
+		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::toggle(&mut sel, w))));
+		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::recursive_expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, _| Node::collapse(&mut sel))));
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
@@ -591,12 +623,20 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("|")], Box::new(|dt, _| { dt.transform(""); }));
 		keys.register(&[&ncstr("C")], Box::new(|dt, _| { let root = Rc::clone(dt.source.clear()); dt.setroot(root); }));
 		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
-		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); }));
+		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); dt.select(dt.first(), true); }));
 		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
 		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
+		keys.register(&[&ncstr("-")], Box::new(|dt, _| {
+			let mut node = (0..dt.getnum()).fold(dt.sel.upgrade().unwrap(), |n, _| Node::prev(&n).upgrade().unwrap_or(n));
+			dt.accordion(&mut node, &|mut sel, w| Node::toggle(&mut sel, w));
+		}));
+		keys.register(&[&ncstr("=")], Box::new(|dt, _| {
+			let mut node = (0..dt.getnum()).fold(dt.sel.upgrade().unwrap(), |n, _| Node::next(&n).upgrade().unwrap_or(n));
+			dt.accordion(&mut node, &|mut sel, w| Node::toggle(&mut sel, w));
+		}));
 
 		self.resize();
-		self.accordion(&|mut sel, w| Node::expand(&mut sel, w));
+		self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
 		while !*done.borrow() {
 			let cmd = keys.wait(self);
