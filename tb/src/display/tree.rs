@@ -10,7 +10,7 @@ use ::interface::*;
 use ::keybinder::Keybinder;
 use ::owning_ref::OwningHandle;
 use ::regex::Regex;
-use super::node::Node;
+use super::node::{Node, State};
 use super::pos::Pos;
 use super::statmsg::StatMsg;
 
@@ -139,7 +139,7 @@ impl<'a> Tree<'a> {
 	}
 
 	fn drawline(&self, line: usize, cur: Pos<'a>) {
-		const DEBUG: bool = false;
+		const DEBUG: bool = true;
 		if self.check_term_size() {
 			ncurses::mv(line as i32, 0);
 			ncurses::clrtoeol();
@@ -424,7 +424,7 @@ impl<'a> Tree<'a> {
 			let mut n = self.root.clone();
 			let mut firstline: Option<isize> = None;
 			for i in path {
-				if n.borrow().expandable() && !n.borrow().expanded {
+				if n.borrow().expandable() && n.borrow().state != State::Expanded {
 					let nextsib_pos = Pos::new(Node::nextsib(&n).clone(), 0);
 					if firstline.is_none() {
 						firstline = self.start.dist_fwd(nextsib_pos.clone()).map(|x| x as isize - 1);

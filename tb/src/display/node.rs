@@ -6,6 +6,7 @@ use ::curses;
 use super::value::Value;
 use ::interface::Value as BackendValue;
 use super::COLWIDTH;
+use super::statmsg::StatMsg;
 
 struct NodeCache {
 	prefix0: String,
@@ -15,6 +16,13 @@ struct NodeCache {
 	search: Option<Search>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum State {
+	Collapsed,
+	Loading,
+	Expanded,
+}
+
 pub struct Node<'a> {
 	pub children: Vec<Rc<RefCell<Node<'a>>>>,
 	parent: Weak<RefCell<Node<'a>>>,
@@ -22,7 +30,7 @@ pub struct Node<'a> {
 	next: Weak<RefCell<Node<'a>>>,
 	prevsib: Weak<RefCell<Node<'a>>>,
 	nextsib: Weak<RefCell<Node<'a>>>,
-	pub expanded: bool,
+	pub state: State,
 	last: bool,
 	value: Rc<RefCell<Value<'a>>>,
 	cache: NodeCache,
@@ -40,8 +48,12 @@ impl<'a> Node<'a> {
 
 	pub fn lines(&self) -> usize {
 		if self.hide { 0 }
-		else if self.expanded { self.cache.placeholder.len() }
-		else { self.cache.content.len() }
+		else {
+			match self.state {
+				State::Loading | State::Expanded => self.cache.placeholder.len(),
+				State::Collapsed => self.cache.content.len(),
+			}
+		}
 	}
 
 	/* Things I dislike about Rust:
@@ -136,7 +148,7 @@ impl<'a> Node<'a> {
 			next: Weak::new(),
 			prevsib: Weak::new(),
 			nextsib: Weak::new(),
-			expanded: false,
+			state: State::Collapsed,
 			last: last,
 			value: val,
 			cache: NodeCache {
@@ -197,8 +209,21 @@ impl<'a> Node<'a> {
 		self.value.borrow().expandable()
 	}
 
+	pub fn mark_loading(mut this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
+		this.borrow_mut().children.clear();
+		let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.borrow().value.clone()), 0);
+		let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), val, width, true, false)));
+		this.borrow_mut().children.push(node.clone());
+		Self::insert(&mut this, &mut node);
+	}
+
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		if this.borrow().expandable() && !this.borrow().expanded {
+		if this.borrow().expandable() && this.borrow().state == State::Collapsed {
+			{
+				let mut mut_this = this.borrow_mut();
+				mut_this.children.clear();
+				mut_this.next = mut_this.nextsib.clone();
+			}
 			let children = Value::children(&this.borrow().value);
 			if children.len() > 0 {
 				let mut cur = this.clone();
@@ -210,12 +235,12 @@ impl<'a> Node<'a> {
 					cur = node;
 				}
 			}
-			this.borrow_mut().expanded = true;
+			this.borrow_mut().state = State::Expanded;
 		}
 	}
 
 	pub fn collapse(this: &mut Rc<RefCell<Node>>) {
-		let expanded = this.borrow().expanded;
+		let expanded = this.borrow().state == State::Expanded;
 		if expanded {
 			this.borrow().value.borrow_mut().refresh();
 			if let Some(next) = this.borrow().nextsib.upgrade() {
@@ -223,22 +248,23 @@ impl<'a> Node<'a> {
 			}
 			let mut mut_this = this.borrow_mut();
 			mut_this.next = mut_this.nextsib.clone();
-			mut_this.children = vec![];
-			mut_this.expanded = false;
+			mut_this.children.clear();
+			mut_this.state = State::Collapsed;
 		}
 	}
 
 	pub fn toggle(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		let expanded = this.borrow().expanded;
-		match expanded {
-			true => Self::collapse(this),
-			false => Self::expand(this, width),
+		let state = this.borrow().state;
+		match state {
+			State::Expanded => Self::collapse(this),
+			State::Collapsed => Self::expand(this, width),
+			_ => (),
 		}
 	}
 
 	pub fn recursive_expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() {
-			if !this.borrow().expanded { Self::expand(this, width); }
+			if this.borrow().state == State::Collapsed { Self::expand(this, width); }
 			let mut children = this.borrow_mut().children.clone(); // `clone` necessary to prevent a runtime borrow loop
 			for child in children.iter_mut() { Self::recursive_expand(child, width); }
 		}
@@ -246,7 +272,7 @@ impl<'a> Node<'a> {
 
 	pub fn refresh(this: &mut Rc<RefCell<Node<'a>>>, w: usize) {
 		this.borrow_mut().reformat(w);
-		if this.borrow().expanded {
+		if this.borrow().state == State::Expanded {
 			Self::collapse(this);
 			Self::expand(this, w);
 		}
@@ -263,16 +289,16 @@ impl<'a> Node<'a> {
 			false => 0,
 		};
 		let highlight = 2;
-		match self.expanded {
-			true => self.cache.placeholder.write(line, palette, prefix, bg, highlight, &self.cache.search),
-			false => self.cache.content.write(line, palette, prefix, bg, highlight, &self.cache.search),
+		match self.state {
+			State::Expanded | State::Loading => self.cache.placeholder.write(line, palette, prefix, bg, highlight, &self.cache.search),
+			State::Collapsed => self.cache.content.write(line, palette, prefix, bg, highlight, &self.cache.search),
 		}.expect("Failed to write line to terminal");
 	}
 
 	pub fn search(&mut self, query: &Option<Regex>) {
-		let fmt = match self.expanded {
-			true => &self.cache.placeholder,
-			false => &self.cache.content,
+		let fmt = match self.state {
+			State::Expanded | State::Loading => &self.cache.placeholder,
+			State::Collapsed => &self.cache.content,
 		};
 		if let Some(q) = query {
 			if self.cache.search.is_none() || self.cache.search.as_ref().expect("Failed to get content of non-empty option")

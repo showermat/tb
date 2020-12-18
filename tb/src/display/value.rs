@@ -43,8 +43,12 @@ impl<'a> Eq for Value<'a> { }
 type Ref<'a> = Rc<RefCell<Value<'a>>>;
 
 impl<'a> Value<'a> {
+	pub fn new_raw(v: BackendValue<'a>, parent: Option<Rc<RefCell<Value<'a>>>>, index: usize) -> Ref<'a> {
+		Rc::new(RefCell::new(Value { v: v, parent: parent, index: index, childcache: None }))
+	}
+
 	pub fn new_root(v: BackendValue<'a>) -> Ref<'a> {
-		Rc::new(RefCell::new(Value { v: v, parent: None, index: 0, childcache: None }))
+		Value::new_raw(v, None, 0)
 	}
 
 	pub fn placeholder(&self) -> FmtCmd {
@@ -67,7 +71,7 @@ impl<'a> Value<'a> {
 		fn getchildren<'a>(this: &Ref<'a>) -> Vec<Ref<'a>> {
 			if this.borrow().v.expandable() {
 				this.borrow().v.children().into_iter().enumerate()
-					.map(|(i, child)| Rc::new(RefCell::new(Value { v: child, parent: Some(this.clone()), index: i, childcache: None }))).collect()
+					.map(|(i, child)| Value::new_raw(child, Some(this.clone()), i)).collect()
 			}
 			else {
 				vec![]
