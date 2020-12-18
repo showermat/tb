@@ -25,20 +25,21 @@ impl<T> Node<T> {
 		if path.is_empty() { self.action = Some(action); }
 		else { (*self.children.entry(path[0]).or_insert(Box::new(Node::new()))).assign(&path[1..], action); }
 	}
-	pub fn wait(&mut self, t: &mut T, path: &[i32]) -> Vec<i32> {
-		if let Some(ref mut a) = self.action { let x: &mut dyn FnMut(&mut T, &[i32]) = &mut *a.borrow_mut(); x(t, path); }
-		if self.children.is_empty() { path.to_vec() }
+	pub fn wait(&mut self, t: &mut T, path: &[i32]) -> (Option<Action<T>>, Vec<i32>) {
+		//if let Some(ref mut a) = self.action { let x: &mut dyn FnMut(&mut T, &[i32]) = &mut *a.borrow_mut(); x(t, path); }
+		// TODO This doesn't invoke intermediate actions, only ones at leaf nodes.  Does that need fixing?
+		if self.children.is_empty() { (self.action.as_ref().map(Rc::clone), path.to_vec()) }
 		else {
 			ncurses::timeout(4000);
 			let next = ncurses::getch();
 			ncurses::timeout(-1);
-			if next == ncurses::ERR { path.to_vec() }
+			if next == ncurses::ERR { (None, path.to_vec()) }
 			else {
 				let mut nextpath = path.to_vec();
 				nextpath.push(next);
 				match self.children.get_mut(&next) {
 					Some(child) => child.wait(t, &nextpath),
-					None => nextpath.to_vec(),
+					None => (None, nextpath.to_vec()),
 				}
 			}
 		}
@@ -57,7 +58,7 @@ impl<'a, T> Keybinder<T> {
 		let ins = Rc::new(RefCell::new(action));
 		for path in paths { self.root.assign(path, ins.clone()); }
 	}
-	pub fn wait(&mut self, t: &mut T) -> Vec<i32> {
+	pub fn wait(&mut self, t: &mut T) -> (Option<Action<T>>, Vec<i32>) {
 		self.root.wait(t, &[])
 	}
 }

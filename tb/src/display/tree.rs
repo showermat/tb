@@ -1,17 +1,18 @@
-use std::rc::{Rc, Weak};
 use std::cell::RefCell;
-use std::time;
 use std::cmp;
 use std::collections::HashMap;
-use ::owning_ref::OwningHandle;
-use ::regex::Regex;
+use std::rc::{Rc, Weak};
+use std::sync::{Arc, Mutex};
+use std::time;
 use ::curses;
+use ::errors::*;
 use ::interface::*;
 use ::keybinder::Keybinder;
+use ::owning_ref::OwningHandle;
+use ::regex::Regex;
 use super::node::Node;
 use super::pos::Pos;
 use super::statmsg::StatMsg;
-use ::errors::*;
 
 type OwnedRoot<'a> = OwningHandle<Box<dyn Source>, Box<Rc<RefCell<Node<'a>>>>>;
 
@@ -75,7 +76,8 @@ pub struct Tree<'a> {
 	lastclick: time::Instant, // Time of the last click, for double-click detection
 	numbuf: Vec<char>, // Buffer for numbers entered to prefix a command
 	palette: curses::Palette, // Colors available for drawing this tree
-	settings: Settings,
+	settings: Settings, // Configuration info
+	lock: Arc<Mutex<()>>, // Single-thread all updates
 }
 
 impl<'a> Tree<'a> {
@@ -101,6 +103,7 @@ impl<'a> Tree<'a> {
 			palette: palette,
 			root: root,
 			settings: settings,
+			lock: Arc::new(Mutex::new(())),
 		})
 	}
 
@@ -639,8 +642,16 @@ impl<'a> Tree<'a> {
 		self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
 		while !*done.borrow() {
-			let cmd = keys.wait(self);
+			let (maybe_action, cmd) = keys.wait(self);
+			if let Some(action) = maybe_action {
+				let lambda: &mut dyn FnMut(&mut Self, &[i32]) = &mut *action.borrow_mut();
+				let lock = Arc::clone(&self.lock);
+				let _guard = lock.lock();
+				lambda(self, &cmd);
+			}
 			if !digits.contains(&cmd) { self.clearnum(); }
 		}
 	}
 }
+
+unsafe impl<'a> Sync for Tree<'a> { }
