@@ -24,7 +24,7 @@ struct TransformManager<'a> {
 
 impl<'a> TransformManager<'a> {
 	fn new_owned_root(source: Box<dyn Source>, w: usize, hideroot: bool) -> OwnedRoot<'a> {
-		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().unwrap().root(), w, hideroot)))) } )
+		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().expect("OwningHandle provided null pointer").root(), w, hideroot)))) } )
 	}
 
 	pub fn new(source: Box<dyn Source>, w: usize, hideroot: bool) -> Self {
@@ -45,7 +45,7 @@ impl<'a> TransformManager<'a> {
 		match self.cur.as_ref().unwrap_or(&self.base).as_owner().transform(q) {
 			Ok(tree) => {
 				self.next = Some(Self::new_owned_root(tree, w, hideroot));
-				Ok(&*(self.next.as_ref().unwrap()))
+				Ok(&*(self.next.as_ref().expect("self.next was not Some after assigning")))
 			},
 			Err(error) => Err(error),
 		}
@@ -139,7 +139,7 @@ impl<'a> Tree<'a> {
 	}
 
 	fn drawline(&self, line: usize, cur: Pos<'a>) {
-		const DEBUG: bool = true;
+		const DEBUG: bool = false;
 		if self.check_term_size() {
 			ncurses::mv(line as i32, 0);
 			ncurses::clrtoeol();
@@ -322,51 +322,44 @@ impl<'a> Tree<'a> {
 	}
 
 	fn accordion(&mut self, mut node: &mut Rc<RefCell<Node<'a>>>, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
-		ncurses::refresh();
 		let start = self.start.node.upgrade().expect("Couldn't get start node in accordion");
 		let sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
-		if node.borrow().is_before(start.clone()) {
-			if node.borrow().is_ancestor_of(start) {
+		if node.borrow().is_before(sel.clone()) {
+			if node.borrow().is_before(start.clone()) && !node.borrow().is_ancestor_of(start.clone()) { op(&mut node, self.size.w); }
+			else {
 				if node.borrow().is_ancestor_of(sel.clone()) {
 					self.select(node.clone(), true); // TODO Use path resolution to select a new sel
 					op(&mut node, self.size.w);
 				}
 				else {
-					let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
+					let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
 					op(&mut node, self.size.w);
-					let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
-					let diff = newoff.unwrap() as isize - oldoff.unwrap() as isize;
-					self.offset += diff;
-					self.start = Pos::new(Rc::downgrade(&sel), 0).seek(-self.offset, true);
-					self.scroll(diff);
+					let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
+					if node.borrow().is_before(start) {
+						// The node is an ancestor of the start node.  In the case of a collapse,
+						// it is possible that so much is collased that the entire document gets
+						// scrolled off the top of the screen and the start node is no longer
+						// valid, so we can't just scroll like we do in the other case.
+						self.start = Pos::new(Rc::downgrade(&sel), 0).seek(-self.offset, true);
+						self.offset = self.start.dist_fwd(Pos::new(self.sel.clone(), 0)).expect("start is not before sel") as isize;
+					}
+					else {
+						let diff = newoff - oldoff;
+						self.offset += diff;
+						self.scroll(diff);
+					}
 				}
 				self.redraw();
 			}
-			else { op(&mut node, self.size.w); }
 		}
-		else if self.start.fwd(self.size.h - 1, true).node.upgrade().unwrap().borrow().is_before(node.clone()) { op(&mut node, self.size.w); }
-		else if node.borrow().is_before(sel.clone()) {
-			if node.borrow().is_ancestor_of(sel.clone()) {
-				self.select(node.clone(), true); // TODO Use path resolution to select a new sel
-				op(&mut node, self.size.w);
-			}
-			else {
-				let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
-				op(&mut node, self.size.w);
-				let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0));
-				let diff = newoff.unwrap() as isize - oldoff.unwrap() as isize;
-				self.offset += diff;
-				self.scroll(diff);
-			}
-			self.redraw();
-		}
+		else if self.start.fwd(self.size.h - 1, true).node.upgrade().expect("Safe traversal returned None").borrow().is_before(node.clone()) { op(&mut node, self.size.w); }
 		else {
 			let mut maxend = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
 			op(&mut node, self.size.w);
 			maxend = cmp::max(maxend, Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
 			// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
 			let startoff = cmp::max(self.offset, 0) as usize;
-			self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend)));
+			self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend + 1)));
 		}
 	}
 
@@ -480,7 +473,7 @@ impl<'a> Tree<'a> {
 		self.sel = Rc::downgrade(&self.root);
 		self.start = Pos::new(Rc::downgrade(&self.root), 0);
 		self.offset = 0;
-		self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w));
+		self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection in setroot"), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
 		self.drawlines((0, self.size.h));
 	}
@@ -523,7 +516,7 @@ impl<'a> Tree<'a> {
 		let oldsel = self.sel.clone();
 		self.selpos(y);
 		if oldsel.ptr_eq(&self.sel) && now.duration_since(self.lastclick).as_millis() < 400 {
-			self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::toggle(&mut sel, w));
+			self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection in click"), &|mut sel, w| Node::toggle(&mut sel, w));
 			self.lastclick = now.checked_sub(time::Duration::from_secs(60)).expect("We're less than 60 seconds after the epoch?"); // Epoch would be better
 		}
 		else { self.lastclick = now; }
@@ -594,10 +587,10 @@ impl<'a> Tree<'a> {
 
 		keys.register(&[&[ncurses::KEY_RESIZE]], Box::new(|dt, _| { dt.resize(); }));
 		keys.register(&[&[ncurses::KEY_MOUSE]], Box::new(|dt, _| dt.mouse(curses::mouseevents())));
-		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::toggle(&mut sel, w))));
-		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::recursive_expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().unwrap(), &|mut sel, _| Node::collapse(&mut sel))));
+		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::toggle(&mut sel, w))));
+		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::recursive_expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w))));
+		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, _| Node::collapse(&mut sel))));
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
@@ -639,7 +632,7 @@ impl<'a> Tree<'a> {
 		}));
 
 		self.resize();
-		self.accordion(&mut self.sel.upgrade().unwrap(), &|mut sel, w| Node::expand(&mut sel, w));
+		self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
 		while !*done.borrow() {
 			let (maybe_action, cmd) = keys.wait(self);

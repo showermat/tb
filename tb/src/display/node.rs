@@ -209,33 +209,53 @@ impl<'a> Node<'a> {
 		self.value.borrow().expandable()
 	}
 
-	pub fn mark_loading(mut this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
+	fn mark_loading(mut this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		this.borrow_mut().children.clear();
 		let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.borrow().value.clone()), 0);
 		let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), val, width, true, false)));
-		this.borrow_mut().children.push(node.clone());
+		{
+			let mut mut_this = this.borrow_mut();
+			mut_this.next = mut_this.nextsib.clone();
+			mut_this.children.push(node.clone());
+		}
 		Self::insert(&mut this, &mut node);
+		this.borrow_mut().state = State::Loading;
+	}
+
+	fn load_children(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
+		assert!(this.borrow().state == State::Loading);
+		this.borrow_mut().children.clear();
+		let children = Value::children(&this.borrow().value);
+		if children.len() > 0 {
+			let lastidx = children.len() - 1;
+			for (i, child) in children.into_iter().enumerate() {
+				let node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx, false)));
+				this.borrow_mut().children.push(node.clone());
+			}
+		}
+	}
+
+	fn finish_loading(this: &mut Rc<RefCell<Node<'a>>>) {
+		assert!(this.borrow().state == State::Loading);
+		if let Some(next) = this.borrow_mut().nextsib.upgrade() {
+			next.borrow_mut().prev = Rc::downgrade(this);
+		}
+		let nextsib = this.borrow().nextsib.clone();
+		this.borrow_mut().next = nextsib;
+		let mut cur = this.clone();
+		let children = this.borrow().children.iter().cloned().collect::<Vec<Rc<RefCell<Node<'a>>>>>();
+		for mut child in children {
+			Self::insert(&mut cur, &mut child);
+			cur = child.clone();
+		}
+		this.borrow_mut().state = State::Expanded;
 	}
 
 	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
 		if this.borrow().expandable() && this.borrow().state == State::Collapsed {
-			{
-				let mut mut_this = this.borrow_mut();
-				mut_this.children.clear();
-				mut_this.next = mut_this.nextsib.clone();
-			}
-			let children = Value::children(&this.borrow().value);
-			if children.len() > 0 {
-				let mut cur = this.clone();
-				let lastidx = children.len() - 1;
-				for (i, child) in children.into_iter().enumerate() {
-					let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx, false)));
-					this.borrow_mut().children.push(node.clone());
-					Self::insert(&mut cur, &mut node);
-					cur = node;
-				}
-			}
-			this.borrow_mut().state = State::Expanded;
+			Self::mark_loading(this, width);
+			Self::load_children(this, width);
+			Self::finish_loading(this);
 		}
 	}
 
