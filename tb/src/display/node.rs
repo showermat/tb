@@ -1,5 +1,4 @@
-use std::rc::{Rc, Weak};
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex, Weak};
 use ::regex::Regex;
 use ::format::{Preformatted, Search};
 use ::curses;
@@ -24,15 +23,15 @@ pub enum State {
 }
 
 pub struct Node<'a> {
-	pub children: Vec<Rc<RefCell<Node<'a>>>>,
-	parent: Weak<RefCell<Node<'a>>>,
-	prev: Weak<RefCell<Node<'a>>>,
-	next: Weak<RefCell<Node<'a>>>,
-	prevsib: Weak<RefCell<Node<'a>>>,
-	nextsib: Weak<RefCell<Node<'a>>>,
+	pub children: Vec<Arc<Mutex<Node<'a>>>>,
+	parent: Weak<Mutex<Node<'a>>>,
+	prev: Weak<Mutex<Node<'a>>>,
+	next: Weak<Mutex<Node<'a>>>,
+	prevsib: Weak<Mutex<Node<'a>>>,
+	nextsib: Weak<Mutex<Node<'a>>>,
 	pub state: State,
 	last: bool,
-	value: Rc<RefCell<Value<'a>>>,
+	value: Arc<Mutex<Value<'a>>>,
 	cache: NodeCache,
 	hide: bool,
 }
@@ -41,8 +40,8 @@ impl<'a> Node<'a> {
 	pub fn depth(&self) -> usize {
 		match self.parent.upgrade() {
 			None => 0,
-			Some(p) if p.borrow().hide => p.borrow().depth(),
-			Some(p) => p.borrow().depth() + 1,
+			Some(p) if p.lock().expect("Poisoned lock").hide => p.lock().expect("Poisoned lock").depth(),
+			Some(p) => p.lock().expect("Poisoned lock").depth() + 1,
 		}
 	}
 
@@ -69,23 +68,23 @@ impl<'a> Node<'a> {
 	 * sufficient.  If the node on one or both sides is deeper in the tree than the one being
 	 * added, sibling links will not be updated correctly.
 	 */
-	fn insert(after: &mut Rc<RefCell<Node<'a>>>, node: &mut Rc<RefCell<Node<'a>>>) {
-		let mut borrowed_node = node.borrow_mut();
-		let mut borrowed_after = after.borrow_mut();
+	fn insert(after: &mut Arc<Mutex<Node<'a>>>, node: &mut Arc<Mutex<Node<'a>>>) {
+		let mut borrowed_node = node.lock().expect("Poisoned lock");
+		let mut borrowed_after = after.lock().expect("Poisoned lock");
 		if let Some(next) = borrowed_after.next.upgrade() {
-			let mut borrowed_next = next.borrow_mut();
-			borrowed_next.prev = Rc::downgrade(&node);
-			borrowed_node.next = Rc::downgrade(&next);
+			let mut borrowed_next = next.lock().expect("Poisoned lock");
+			borrowed_next.prev = Arc::downgrade(&node);
+			borrowed_node.next = Arc::downgrade(&next);
 			if borrowed_next.parent.ptr_eq(&borrowed_node.parent) {
-				borrowed_next.prevsib = Rc::downgrade(&node);
+				borrowed_next.prevsib = Arc::downgrade(&node);
 			}
 		}
-		borrowed_after.next = Rc::downgrade(&node);
-		borrowed_node.prev = Rc::downgrade(&after);
+		borrowed_after.next = Arc::downgrade(&node);
+		borrowed_node.prev = Arc::downgrade(&after);
 		borrowed_node.nextsib = borrowed_node.next.clone();
 		borrowed_node.prevsib = borrowed_node.prev.clone();
-		if !Rc::downgrade(&after).ptr_eq(&borrowed_node.parent) {
-			borrowed_after.nextsib = Rc::downgrade(node);
+		if !Arc::downgrade(&after).ptr_eq(&borrowed_node.parent) {
+			borrowed_after.nextsib = Arc::downgrade(node);
 		}
 	}
 
@@ -104,8 +103,8 @@ impl<'a> Node<'a> {
 				match n.parent.upgrade() {
 					None => "".to_string(),
 					Some(parent) => {
-						let ppref = parent_prefix(&parent.borrow(), depth + 1, maxdepth);
-						if parent.borrow().hide { ppref }
+						let ppref = parent_prefix(&parent.lock().expect("Poisoned lock"), depth + 1, maxdepth);
+						if parent.lock().expect("Poisoned lock").hide { ppref }
 						else if n.last { ppref  + &repeat(" ", COLWIDTH) }
 						else { ppref + "│" + &repeat(" ", COLWIDTH - 1) }
 					},
@@ -117,8 +116,8 @@ impl<'a> Node<'a> {
 				None => "".to_string(),
 				Some(parent) => {
 					let branch = if n.last { "└".to_string() } else { "├".to_string() };
-					let ppref = parent_prefix(&parent.borrow(), 1, maxdepth);
-					if parent.borrow().hide { ppref }
+					let ppref = parent_prefix(&parent.lock().expect("Poisoned lock"), 1, maxdepth);
+					if parent.lock().expect("Poisoned lock").hide { ppref }
 					else { ppref + &branch + &repeat("─", COLWIDTH - 2) + " " }
 				}
 			}
@@ -135,12 +134,12 @@ impl<'a> Node<'a> {
 		self.cache.prefix0 = self.prefix(maxdepth, true);
 		self.cache.prefix1 = self.prefix(maxdepth, false);
 		let contentw = screenwidth - ((maxdepth + 1) * COLWIDTH) % screenwidth;
-		self.cache.content = self.value.borrow().content().format(contentw, super::FG_COLORS.len());
-		self.cache.placeholder = self.value.borrow().placeholder().format(contentw, super::FG_COLORS.len());
+		self.cache.content = self.value.lock().expect("Poisoned lock").content().format(contentw, super::FG_COLORS.len());
+		self.cache.placeholder = self.value.lock().expect("Poisoned lock").placeholder().format(contentw, super::FG_COLORS.len());
 		self.cache.search = None;
 	}
 
-	fn new(parent: Weak<RefCell<Node<'a>>>, val: Rc<RefCell<Value<'a>>>, width: usize, last: bool, hide: bool) -> Self {
+	fn new(parent: Weak<Mutex<Node<'a>>>, val: Arc<Mutex<Value<'a>>>, width: usize, last: bool, hide: bool) -> Self {
 		let mut ret = Node {
 			children: vec![],
 			parent: parent,
@@ -168,113 +167,117 @@ impl<'a> Node<'a> {
 		Self::new(Weak::new(), Value::new_root(val), width, true, hide)
 	}
 
-	fn traverse_unhidden(start: &Rc<RefCell<Node<'a>>>, op: &dyn Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
+	fn traverse_unhidden(start: &Arc<Mutex<Node<'a>>>, op: &dyn Fn(&Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
 		let mut cur = op(&start);
 		loop {
 			match cur.upgrade() {
 				None => return cur,
 				Some(node) => {
-					if node.borrow().lines() > 0 { return Rc::downgrade(&node); }
+					if node.lock().expect("Poisoned lock").lines() > 0 { return Arc::downgrade(&node); }
 					else { cur = op(&node); }
 				},
 			}
 		}
 	}
 
-	pub fn parent(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
-		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().parent.clone())
+	pub fn parent(this: &Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Arc<Mutex<Node<'a>>>| n.lock().expect("Poisoned lock").parent.clone())
 	}
 	
-	pub fn next(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
-		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().next.clone())
+	pub fn next(this: &Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Arc<Mutex<Node<'a>>>| n.lock().expect("Poisoned lock").next.clone())
 	}
 	
-	pub fn prev(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
-		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().prev.clone())
+	pub fn prev(this: &Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Arc<Mutex<Node<'a>>>| n.lock().expect("Poisoned lock").prev.clone())
 	}
 	
-	pub fn nextsib(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
-		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().nextsib.clone())
+	pub fn nextsib(this: &Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Arc<Mutex<Node<'a>>>| n.lock().expect("Poisoned lock").nextsib.clone())
 	}
 
-	pub fn prevsib(this: &Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>> {
-		Self::traverse_unhidden(this, &|n: &Rc<RefCell<Node<'a>>>| n.borrow().prevsib.clone())
+	pub fn prevsib(this: &Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>> {
+		Self::traverse_unhidden(this, &|n: &Arc<Mutex<Node<'a>>>| n.lock().expect("Poisoned lock").prevsib.clone())
 	}
 
-	pub fn raw_next(&self) -> Weak<RefCell<Node<'a>>> {
+	pub fn raw_next(&self) -> Weak<Mutex<Node<'a>>> {
 		self.next.clone()
 	}
 	
 	pub fn expandable(&self) -> bool {
-		self.value.borrow().expandable()
+		self.value.lock().expect("Poisoned lock").expandable()
 	}
 
-	fn mark_loading(mut this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		this.borrow_mut().children.clear();
-		let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.borrow().value.clone()), 0);
-		let mut node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), val, width, true, false)));
+	fn mark_loading(mut this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+		this.lock().expect("Poisoned lock").children.clear();
+		let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.lock().expect("Poisoned lock").value.clone()), 0);
+		let mut node = Arc::new(Mutex::new(Self::new(Arc::downgrade(this), val, width, true, false)));
 		{
-			let mut mut_this = this.borrow_mut();
+			let mut mut_this = this.lock().expect("Poisoned lock");
 			mut_this.next = mut_this.nextsib.clone();
 			mut_this.children.push(node.clone());
 		}
 		Self::insert(&mut this, &mut node);
-		this.borrow_mut().state = State::Loading;
+		this.lock().expect("Poisoned lock").state = State::Loading;
 	}
 
-	fn load_children(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		assert!(this.borrow().state == State::Loading);
-		this.borrow_mut().children.clear();
-		let children = Value::children(&this.borrow().value);
+	fn load_children(this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+		assert!(this.lock().expect("Poisoned lock").state == State::Loading);
+		this.lock().expect("Poisoned lock").children.clear();
+		let children = Value::children(&this.lock().expect("Poisoned lock").value);
 		if children.len() > 0 {
 			let lastidx = children.len() - 1;
 			for (i, child) in children.into_iter().enumerate() {
-				let node = Rc::new(RefCell::new(Self::new(Rc::downgrade(this), child, width, i == lastidx, false)));
-				this.borrow_mut().children.push(node.clone());
+				let node = Arc::new(Mutex::new(Self::new(Arc::downgrade(this), child, width, i == lastidx, false)));
+				this.lock().expect("Poisoned lock").children.push(node.clone());
 			}
 		}
 	}
 
-	fn finish_loading(this: &mut Rc<RefCell<Node<'a>>>) {
-		assert!(this.borrow().state == State::Loading);
-		if let Some(next) = this.borrow_mut().nextsib.upgrade() {
-			next.borrow_mut().prev = Rc::downgrade(this);
+	fn finish_loading(this: &mut Arc<Mutex<Node<'a>>>) {
+		assert!(this.lock().expect("Poisoned lock").state == State::Loading);
+		if let Some(next) = this.lock().expect("Poisoned lock").nextsib.upgrade() {
+			next.lock().expect("Poisoned lock").prev = Arc::downgrade(this);
 		}
-		let nextsib = this.borrow().nextsib.clone();
-		this.borrow_mut().next = nextsib;
+		let nextsib = this.lock().expect("Poisoned lock").nextsib.clone();
+		this.lock().expect("Poisoned lock").next = nextsib;
 		let mut cur = this.clone();
-		let children = this.borrow().children.iter().cloned().collect::<Vec<Rc<RefCell<Node<'a>>>>>();
+		let children = this.lock().expect("Poisoned lock").children.iter().cloned().collect::<Vec<Arc<Mutex<Node<'a>>>>>();
 		for mut child in children {
 			Self::insert(&mut cur, &mut child);
 			cur = child.clone();
 		}
-		this.borrow_mut().state = State::Expanded;
+		this.lock().expect("Poisoned lock").state = State::Expanded;
 	}
 
-	pub fn expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		if this.borrow().expandable() && this.borrow().state == State::Collapsed {
+	pub fn expand(this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+		let (expandable, state) = {
+			let locked_this = this.lock().expect("Poisoned lock");
+			(locked_this.expandable(), locked_this.state)
+		};
+		if expandable && state == State::Collapsed {
 			Self::mark_loading(this, width);
 			Self::load_children(this, width);
 			Self::finish_loading(this);
 		}
 	}
 
-	pub fn collapse(this: &mut Rc<RefCell<Node>>) {
-		let expanded = this.borrow().state == State::Expanded;
+	pub fn collapse(this: &mut Arc<Mutex<Node>>) {
+		let expanded = this.lock().expect("Poisoned lock").state == State::Expanded;
 		if expanded {
-			this.borrow().value.borrow_mut().refresh();
-			if let Some(next) = this.borrow().nextsib.upgrade() {
-				next.borrow_mut().prev = Rc::downgrade(this);
+			this.lock().expect("Poisoned lock").value.lock().expect("Poisoned lock").refresh();
+			if let Some(next) = this.lock().expect("Poisoned lock").nextsib.upgrade() {
+				next.lock().expect("Poisoned lock").prev = Arc::downgrade(this);
 			}
-			let mut mut_this = this.borrow_mut();
+			let mut mut_this = this.lock().expect("Poisoned lock");
 			mut_this.next = mut_this.nextsib.clone();
 			mut_this.children.clear();
 			mut_this.state = State::Collapsed;
 		}
 	}
 
-	pub fn toggle(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		let state = this.borrow().state;
+	pub fn toggle(this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+		let state = this.lock().expect("Poisoned lock").state;
 		match state {
 			State::Expanded => Self::collapse(this),
 			State::Collapsed => Self::expand(this, width),
@@ -282,17 +285,17 @@ impl<'a> Node<'a> {
 		}
 	}
 
-	pub fn recursive_expand(this: &mut Rc<RefCell<Node<'a>>>, width: usize) {
-		if this.borrow().expandable() {
-			if this.borrow().state == State::Collapsed { Self::expand(this, width); }
-			let mut children = this.borrow_mut().children.clone(); // `clone` necessary to prevent a runtime borrow loop
+	pub fn recursive_expand(this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+		if this.lock().expect("Poisoned lock").expandable() {
+			if this.lock().expect("Poisoned lock").state == State::Collapsed { Self::expand(this, width); }
+			let mut children = this.lock().expect("Poisoned lock").children.clone(); // `clone` necessary to prevent a runtime borrow loop
 			for child in children.iter_mut() { Self::recursive_expand(child, width); }
 		}
 	}
 
-	pub fn refresh(this: &mut Rc<RefCell<Node<'a>>>, w: usize) {
-		this.borrow_mut().reformat(w);
-		if this.borrow().state == State::Expanded {
+	pub fn refresh(this: &mut Arc<Mutex<Node<'a>>>, w: usize) {
+		this.lock().expect("Poisoned lock").reformat(w);
+		if this.lock().expect("Poisoned lock").state == State::Expanded {
 			Self::collapse(this);
 			Self::expand(this, w);
 		}
@@ -342,17 +345,19 @@ impl<'a> Node<'a> {
 		&self.cache.search
 	}
 
-	pub fn searchfrom(&self, query: &Regex, offset: isize) -> Vec<usize> {
+	pub fn searchfrom(this: &Arc<Mutex<Node>>, query: &Regex, offset: isize) -> Vec<usize> {
 		// If the user provides an enormous offset, that's their problem.  We could choose to first
 		// check the number of occurrences and mod by that, but that requires a full document scan,
 		// which isn't practical for some backends.
-		(0..offset.abs()).fold(self.value.clone(), |val, _| {
+		let value = this.lock().expect("Poisoned lock").value.clone();
+		(0..offset.abs()).fold(value, |val, _| {
 			Value::searchfrom(&val, query, offset > 0).unwrap_or(val)
-		}).borrow().path()
+		}).lock().expect("Poisoned lock").path()
 	}
 	
-	pub fn is_before(&self, n: Rc<RefCell<Node>>) -> bool {
-		let (path1, path2) = (self.value.borrow().path(), n.borrow().value.borrow().path());
+	pub fn is_before(this: &Arc<Mutex<Node>>, n: &Arc<Mutex<Node>>) -> bool {
+		let path1 = this.lock().expect("Poisoned lock").value.lock().expect("Poisoned lock").path();
+		let path2 = n.lock().expect("Poisoned lock").value.lock().expect("Poisoned lock").path();
 		for i in 0..=std::cmp::max(path1.len(), path2.len()) {
 			if path2.len() <= i { return false; }
 			if path1.len() <= i { return true; }
@@ -362,25 +367,26 @@ impl<'a> Node<'a> {
 		false
 	}
 
-	pub fn is_ancestor_of(&self, n: Rc<RefCell<Node>>) -> bool {
-		let (path1, path2) = (self.value.borrow().path(), n.borrow().value.borrow().path());
+	pub fn is_ancestor_of(this: &Arc<Mutex<Node>>, n: &Arc<Mutex<Node>>) -> bool {
+		let path1 = this.lock().expect("Poisoned lock").value.lock().expect("Poisoned lock").path();
+		let path2 = n.lock().expect("Poisoned lock").value.lock().expect("Poisoned lock").path();
 		if path1.len() >= path2.len() { false }
 		else if path2[..path1.len()] != path1[..] { false }
 		else { true }
 	}
 
 	pub fn invoke(&self) {
-		self.value.borrow().invoke();
+		self.value.lock().expect("Poisoned lock").invoke();
 	}
 
 	pub fn yank(&self) -> String {
-		self.value.borrow().content().render(interface::Render::Yank, "")
+		self.value.lock().expect("Poisoned lock").content().render(interface::Render::Yank, "")
 	}
 }
 
 impl<'a> std::fmt::Debug for Node<'a> {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		let content = self.value.borrow().content().render(interface::Render::Debug, " ");
+		let content = self.value.lock().expect("Poisoned lock").content().render(interface::Render::Debug, " ");
 		write!(f, "Node({})", content)
 	}
 }

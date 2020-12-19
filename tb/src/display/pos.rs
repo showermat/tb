@@ -1,16 +1,15 @@
-use std::rc::{Rc, Weak};
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex, Weak};
 use super::node::Node;
 use std::cmp;
 
 #[derive(Clone)]
 pub struct Pos<'a> {
-	pub node: Weak<RefCell<Node<'a>>>,
+	pub node: Weak<Mutex<Node<'a>>>,
 	pub line: usize,
 }
 
 impl<'a> Pos<'a> {
-	pub fn new(node: Weak<RefCell<Node<'a>>>, line: usize) -> Self {
+	pub fn new(node: Weak<Mutex<Node<'a>>>, line: usize) -> Self {
 		Pos { node: node, line: line }
 	}
 
@@ -26,8 +25,8 @@ impl<'a> Pos<'a> {
 			match cur.node.upgrade() {
 				None => return None,
 				Some(n) => {
-					ret += n.borrow().lines() - cur.line;
-					cur = Pos::new(n.borrow().raw_next().clone(), 0);
+					ret += n.lock().expect("Poisoned lock").lines() - cur.line;
+					cur = Pos::new(n.lock().expect("Poisoned lock").raw_next().clone(), 0);
 				},
 			}
 		}
@@ -42,7 +41,7 @@ impl<'a> Pos<'a> {
 			match cur.node.upgrade() {
 				None => return Pos::nil(),
 				Some(node) => {
-					let curlines = node.borrow().lines();
+					let curlines = node.lock().expect("Poisoned lock").lines();
 					if remain < curlines - cur.line { break; }
 					match Node::next(&node).upgrade() {
 						None => match safe {
@@ -51,7 +50,7 @@ impl<'a> Pos<'a> {
 						},
 						Some(realnext) => {
 							remain -= curlines - cur.line;
-							cur = Pos::new(Rc::downgrade(&realnext), 0);
+							cur = Pos::new(Arc::downgrade(&realnext), 0);
 						}
 					}
 				}
@@ -77,7 +76,7 @@ impl<'a> Pos<'a> {
 						},
 						Some(prev) => {
 							remain -= cur.line + 1;
-							cur = Pos::new(Rc::downgrade(&prev), cmp::max(prev.borrow().lines(), 1) - 1)
+							cur = Pos::new(Arc::downgrade(&prev), cmp::max(prev.lock().expect("Poisoned lock").lines(), 1) - 1)
 						}
 					}
 				}

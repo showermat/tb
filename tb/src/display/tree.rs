@@ -1,8 +1,6 @@
-use std::cell::RefCell;
 use std::cmp;
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time;
 use ::curses;
 use ::errors::*;
@@ -14,7 +12,7 @@ use super::node::{Node, State};
 use super::pos::Pos;
 use super::statmsg::StatMsg;
 
-type OwnedRoot<'a> = OwningHandle<Box<dyn Source>, Box<Rc<RefCell<Node<'a>>>>>;
+type OwnedRoot<'a> = OwningHandle<Box<dyn Source>, Box<Arc<Mutex<Node<'a>>>>>;
 
 struct TransformManager<'a> {
 	base: OwnedRoot<'a>,
@@ -24,7 +22,7 @@ struct TransformManager<'a> {
 
 impl<'a> TransformManager<'a> {
 	fn new_owned_root(source: Box<dyn Source>, w: usize, hideroot: bool) -> OwnedRoot<'a> {
-		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Rc::new(RefCell::new(Node::new_root(s.as_ref().expect("OwningHandle provided null pointer").root(), w, hideroot)))) } )
+		OwningHandle::new_with_fn(source, |s| unsafe { Box::new(Arc::new(Mutex::new(Node::new_root(s.as_ref().expect("OwningHandle provided null pointer").root(), w, hideroot)))) } )
 	}
 
 	pub fn new(source: Box<dyn Source>, w: usize, hideroot: bool) -> Self {
@@ -35,13 +33,13 @@ impl<'a> TransformManager<'a> {
 		}
 	}
 
-	pub fn clear(&mut self) -> &Rc<RefCell<Node<'a>>> {
+	pub fn clear(&mut self) -> &Arc<Mutex<Node<'a>>> {
 		self.next = None;
 		self.cur = None;
 		&*self.base
 	}
 
-	pub fn propose(&mut self, q: &str, w: usize, hideroot: bool) -> Result<&Rc<RefCell<Node<'a>>>> {
+	pub fn propose(&mut self, q: &str, w: usize, hideroot: bool) -> Result<&Arc<Mutex<Node<'a>>>> {
 		match self.cur.as_ref().unwrap_or(&self.base).as_owner().transform(q) {
 			Ok(tree) => {
 				self.next = Some(Self::new_owned_root(tree, w, hideroot));
@@ -56,7 +54,7 @@ impl<'a> TransformManager<'a> {
 		self.next = None;
 	}
 
-	pub fn reject(&mut self) -> &Rc<RefCell<Node<'a>>> {
+	pub fn reject(&mut self) -> &Arc<Mutex<Node<'a>>> {
 		self.next = None;
 		&*(self.cur.as_ref().unwrap_or(&self.base))
 	}
@@ -64,8 +62,8 @@ impl<'a> TransformManager<'a> {
 
 pub struct Tree<'a> {
 	source: TransformManager<'a>, // Holds tree source and manages transformations
-	root: Rc<RefCell<Node<'a>>>, // Root node of the displayed tree
-	sel: Weak<RefCell<Node<'a>>>, // Currently selected node
+	root: Arc<Mutex<Node<'a>>>, // Root node of the displayed tree
+	sel: Weak<Mutex<Node<'a>>>, // Currently selected node
 	size: curses::Size, // Terminal size
 	start: Pos<'a>, // Node and line corresponding to the top of the screen
 	offset: isize, // Line number of currently selected node (distance from start to first line of sel)
@@ -84,15 +82,15 @@ impl<'a> Tree<'a> {
 	pub fn new(tree: Box<dyn Source>, colors: Vec<Color>, settings: Settings) -> Result<Self> {
 		let size = curses::scrsize();
 		let mut source = TransformManager::new(tree, size.w, settings.hide_root);
-		let root = Rc::clone(source.clear());
+		let root = Arc::clone(source.clear());
 		let mut fgcol = super::FG_COLORS.to_vec();
 		fgcol.extend(colors);
 		let palette = curses::Palette::new(fgcol, super::BG_COLORS.to_vec())?;
 		Ok(Tree {
 			source: source,
-			sel: Rc::downgrade(&root),
+			sel: Arc::downgrade(&root),
 			size: size,
-			start: Pos::new(Rc::downgrade(&root), 0),
+			start: Pos::new(Arc::downgrade(&root), 0),
 			offset: 0,
 			query: None,
 			searchhist: vec![],
@@ -107,16 +105,16 @@ impl<'a> Tree<'a> {
 		})
 	}
 
-	fn first(&self) -> Rc<RefCell<Node<'a>>> {
+	fn first(&self) -> Arc<Mutex<Node<'a>>> {
 		let mut cur = self.root.clone();
-		while cur.borrow().lines() == 0 {
+		while cur.lock().expect("Poisoned lock").lines() == 0 {
 			if let Some(next) = Node::next(&cur).upgrade() { cur = next; }
 			else { return self.root.clone(); }
 		}
 		cur
 	}
 
-	fn last(&self) -> Rc<RefCell<Node<'a>>> {
+	fn last(&self) -> Arc<Mutex<Node<'a>>> {
 		let mut cur = self.root.clone();
 		loop {
 			let new =
@@ -156,8 +154,8 @@ impl<'a> Tree<'a> {
 					ncurses::addstr(&fill);
 					ncurses::mv(line as i32, 0);
 				}
-				node.borrow_mut().search(&self.query);
-				node.borrow().drawline(&self.palette, cur.line, selected);
+				node.lock().expect("Poisoned lock").search(&self.query);
+				node.lock().expect("Poisoned lock").drawline(&self.palette, cur.line, selected);
 			}
 		}
 	}
@@ -172,7 +170,7 @@ impl<'a> Tree<'a> {
 
 	fn sellines(&self) -> (usize, usize) {
 		let sel = self.sel.upgrade().expect("Couldn't get selection in sellines");
-		let lines = sel.borrow().lines();
+		let lines = sel.lock().expect("Poisoned lock").lines();
 		//assert!(self.offset + lines as isize >= 0 && self.offset < self.size.h as isize);
 		(cmp::max(self.offset, 0) as usize, cmp::min((self.offset + lines as isize) as usize, self.size.h))
 	}
@@ -203,7 +201,7 @@ impl<'a> Tree<'a> {
 			if by > 0 {
 				loop {
 					let sel = self.sel.upgrade().expect("Couldn't get selection in scroll");
-					let lines = sel.borrow().lines() as isize;
+					let lines = sel.lock().expect("Poisoned lock").lines() as isize;
 					if self.offset + lines - 1 >= 0 { break; }
 					self.offset += lines;
 					self.sel = Node::next(&sel).clone();
@@ -214,7 +212,7 @@ impl<'a> Tree<'a> {
 					let oldsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
 					self.sel = Node::prev(&oldsel).clone();
 					let newsel = self.sel.upgrade().expect("Couldn't get selection in scroll");
-					self.offset -= newsel.borrow().lines() as isize;
+					self.offset -= newsel.lock().expect("Poisoned lock").lines() as isize;
 				}
 			}
 			if dist >= self.size.h { self.drawlines((0, self.size.h)); }
@@ -235,21 +233,21 @@ impl<'a> Tree<'a> {
 		else { 0 }
 	}
 
-	fn select(&mut self, sel: Rc<RefCell<Node<'a>>>, scrollin: bool) -> isize {
+	fn select(&mut self, sel: Arc<Mutex<Node<'a>>>, scrollin: bool) -> isize {
 		if self.check_term_size() {
 			let oldsel = self.sel.upgrade().expect("Couldn't get selection in select");
-			let same = Rc::ptr_eq(&oldsel, &sel);
-			let down = oldsel.borrow().is_before(sel.clone());
+			let same = Arc::ptr_eq(&oldsel, &sel);
+			let down = Node::is_before(&oldsel, &sel);
 			let oldlines = self.sellines();
 			self.offset += match down {
-				true => Pos::new(self.sel.clone(), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0))
+				true => Pos::new(self.sel.clone(), 0).dist_fwd(Pos::new(Arc::downgrade(&sel), 0))
 					.expect("Down is true but new selection not after old") as isize,
-				false => -(Pos::new(Rc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), 0))
+				false => -(Pos::new(Arc::downgrade(&sel), 0).dist_fwd(Pos::new(self.sel.clone(), 0))
 					.expect("Down is false but new selection not before old") as isize),
 			};
-			self.sel = Rc::downgrade(&sel);
+			self.sel = Arc::downgrade(&sel);
 			let scrolldist = self.scroll({
-				let lines = sel.borrow().lines() as isize;
+				let lines = sel.lock().expect("Poisoned lock").lines() as isize;
 				let off = self.offset;
 				let h = self.size.h as isize;
 				if lines == 0 { if scrollin { self.statline(); } 0 }
@@ -281,9 +279,9 @@ impl<'a> Tree<'a> {
 	}
 
 	fn foreach(&mut self, f: &dyn Fn(&mut Node)) {
-		let mut cur = Rc::downgrade(&self.root);
+		let mut cur = Arc::downgrade(&self.root);
 		while let Some(n) = cur.upgrade() {
-			f(&mut n.borrow_mut());
+			f(&mut n.lock().expect("Poisoned lock"));
 			cur = Node::next(&n).clone();
 		}
 	}
@@ -321,26 +319,26 @@ impl<'a> Tree<'a> {
 		self.select(target, true);
 	}
 
-	fn accordion(&mut self, mut node: &mut Rc<RefCell<Node<'a>>>, op: &dyn Fn(&mut Rc<RefCell<Node>>, usize) -> ()) {
+	fn accordion(&mut self, mut node: &mut Arc<Mutex<Node<'a>>>, op: &dyn Fn(&mut Arc<Mutex<Node>>, usize) -> ()) {
 		let start = self.start.node.upgrade().expect("Couldn't get start node in accordion");
 		let sel = self.sel.upgrade().expect("Couldn't get selection in accordion");
-		if node.borrow().is_before(sel.clone()) {
-			if node.borrow().is_before(start.clone()) && !node.borrow().is_ancestor_of(start.clone()) { op(&mut node, self.size.w); }
+		if Node::is_before(&node, &sel) {
+			if Node::is_before(&node, &start) && !Node::is_ancestor_of(&node, &start) { op(&mut node, self.size.w); }
 			else {
-				if node.borrow().is_ancestor_of(sel.clone()) {
+				if Node::is_ancestor_of(&node, &sel) {
 					self.select(node.clone(), true); // TODO Use path resolution to select a new sel
 					op(&mut node, self.size.w);
 				}
 				else {
-					let oldoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
+					let oldoff = Pos::new(Arc::downgrade(&node), 0).dist_fwd(Pos::new(Arc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
 					op(&mut node, self.size.w);
-					let newoff = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::new(Rc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
-					if node.borrow().is_before(start) {
+					let newoff = Pos::new(Arc::downgrade(&node), 0).dist_fwd(Pos::new(Arc::downgrade(&sel), 0)).expect("is_before returned true, but dist_fwd returned None") as isize;
+					if Node::is_before(&node, &start) {
 						// The node is an ancestor of the start node.  In the case of a collapse,
 						// it is possible that so much is collased that the entire document gets
 						// scrolled off the top of the screen and the start node is no longer
 						// valid, so we can't just scroll like we do in the other case.
-						self.start = Pos::new(Rc::downgrade(&sel), 0).seek(-self.offset, true);
+						self.start = Pos::new(Arc::downgrade(&sel), 0).seek(-self.offset, true);
 						self.offset = self.start.dist_fwd(Pos::new(self.sel.clone(), 0)).expect("start is not before sel") as isize;
 					}
 					else {
@@ -352,18 +350,18 @@ impl<'a> Tree<'a> {
 				self.redraw();
 			}
 		}
-		else if self.start.fwd(self.size.h - 1, true).node.upgrade().expect("Safe traversal returned None").borrow().is_before(node.clone()) { op(&mut node, self.size.w); }
+		else if Node::is_before(&self.start.fwd(self.size.h - 1, true).node.upgrade().expect("Safe traversal returned None"), &node) { op(&mut node, self.size.w); }
 		else {
-			let mut maxend = Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
+			let mut maxend = Pos::new(Arc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document");
 			op(&mut node, self.size.w);
-			maxend = cmp::max(maxend, Pos::new(Rc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
+			maxend = cmp::max(maxend, Pos::new(Arc::downgrade(&node), 0).dist_fwd(Pos::nil()).expect("Failed to find distance to end of document"));
 			// Unfortunately we need to redraw the whole selection, because we don't know how much it's changed due to the (un)expansion
 			let startoff = cmp::max(self.offset, 0) as usize;
 			self.drawlines((startoff, cmp::min(self.size.h, startoff + maxend + 1)));
 		}
 	}
 
-	fn refresh(&mut self, node: &mut Rc<RefCell<Node<'a>>>) {
+	fn refresh(&mut self, node: &mut Arc<Mutex<Node<'a>>>) {
 		self.accordion(node, &|n, w| Node::refresh(n, w));
 	}
 
@@ -381,24 +379,24 @@ impl<'a> Tree<'a> {
 		let mut line = -(self.start.line as isize);
 		let onscreen = |i: isize| i >= 0 && i < self.size.h as isize;
 		while line < self.size.h as isize {
-			if let Some(search) = cur.borrow().getsearch().as_ref() {
+			if let Some(search) = cur.lock().expect("Poisoned lock").getsearch().as_ref() {
 				for m in search.matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
-						to_redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
+						to_redraw.insert(matchline as usize, Pos::new(Arc::downgrade(&cur), m));
 					}
 				}
 			}
-			cur.borrow_mut().search(&self.query);
+			cur.lock().expect("Poisoned lock").search(&self.query);
 			if self.query.is_some() {
-				for m in cur.borrow().getsearch().as_ref().expect("Query is empty after calling search").matchlines() {
+				for m in cur.lock().expect("Poisoned lock").getsearch().as_ref().expect("Query is empty after calling search").matchlines() {
 					let matchline = line + m as isize;
 					if onscreen(matchline) {
-						to_redraw.insert(matchline as usize, Pos::new(Rc::downgrade(&cur), m));
+						to_redraw.insert(matchline as usize, Pos::new(Arc::downgrade(&cur), m));
 					}
 				}
 			}
-			line += cur.borrow().lines() as isize;
+			line += cur.lock().expect("Poisoned lock").lines() as isize;
 			let next = Node::next(&cur).upgrade();
 			match next {
 				None => break,
@@ -413,25 +411,29 @@ impl<'a> Tree<'a> {
 	fn searchnext(&mut self, offset: isize) {
 		if let Some(q) = &self.query {
 			let sel = self.sel.upgrade().expect("Couldn't get selection in searchnext");
-			let path = sel.borrow().searchfrom(q, offset * (if self.searchfwd { 1 } else { -1 }));
+			let path = Node::searchfrom(&sel, q, offset * (if self.searchfwd { 1 } else { -1 }));
 			let mut n = self.root.clone();
 			let mut firstline: Option<isize> = None;
 			for i in path {
-				if n.borrow().expandable() && n.borrow().state != State::Expanded {
+				let (expandable, state) = {
+					let locked = n.lock().expect("Poisoned lock");
+					(locked.expandable(), locked.state)
+				};
+				if expandable && state != State::Expanded {
 					let nextsib_pos = Pos::new(Node::nextsib(&n).clone(), 0);
 					if firstline.is_none() {
 						firstline = self.start.dist_fwd(nextsib_pos.clone()).map(|x| x as isize - 1);
 					}
 					Node::expand(&mut n, self.size.w);
-					if n.borrow().is_before(sel.clone()) {
-						if !n.borrow().is_before(self.start.node.upgrade().expect("Tree has invalid start position")) {
+					if Node::is_before(&n, &sel) {
+						if !Node::is_before(&n, &self.start.node.upgrade().expect("Tree has invalid start position")) {
 							// If n was before sel while collapsed, then n must have a next sibling
-							let newlines = Pos::new(Rc::downgrade(&n), 0).dist_fwd(nextsib_pos.clone()).expect("Expanding node has no next sibling") - 1;
+							let newlines = Pos::new(Arc::downgrade(&n), 0).dist_fwd(nextsib_pos.clone()).expect("Expanding node has no next sibling") - 1;
 							self.offset += newlines as isize;
 						}
 					}
 				}
-				let target = n.borrow().children[i].clone();
+				let target = n.lock().expect("Poisoned lock").children[i].clone();
 				n = target;
 			}
 			let mut lastline = cmp::min(self.start.dist_fwd(Pos::nil()).expect("Couldn't find distance from start to end"), self.size.h) as isize;
@@ -463,15 +465,15 @@ impl<'a> Tree<'a> {
 				self.searchhist.push(res);
 				self.searchfwd = forward;
 				let sel = self.sel.upgrade().expect("Couldn't get selection in search");
-				if !sel.borrow().matches() { self.searchnext(1); }
+				if !sel.lock().expect("Poisoned lock").matches() { self.searchnext(1); }
 			}
 		}
 	}
 
-	fn setroot(&mut self, root: Rc<RefCell<Node<'a>>>) {
+	fn setroot(&mut self, root: Arc<Mutex<Node<'a>>>) {
 		self.root = root;
-		self.sel = Rc::downgrade(&self.root);
-		self.start = Pos::new(Rc::downgrade(&self.root), 0);
+		self.sel = Arc::downgrade(&self.root);
+		self.start = Pos::new(Arc::downgrade(&self.root), 0);
 		self.offset = 0;
 		self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection in setroot"), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
@@ -482,10 +484,10 @@ impl<'a> Tree<'a> {
 		if self.check_term_size() {
 			let incxform = Box::new(|dt: &mut Tree, query: &str| {
 				let root = match dt.source.propose(query, dt.size.w, dt.settings.hide_root) {
-					Ok(tree) => Rc::clone(tree),
+					Ok(tree) => Arc::clone(tree),
 					Err(error) => {
 						let message = error.iter().fold("Error:".to_string(), |acc, x| acc + "\n" + &x.to_string()).to_string();
-						Rc::new(RefCell::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w, false)))
+						Arc::new(Mutex::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w, false)))
 					},
 				};
 				dt.setroot(root);
@@ -495,8 +497,8 @@ impl<'a> Tree<'a> {
 			let xformhist = self.xformhist.clone();
 			let res = ::prompt::prompt(self, (size.h, 0), size.w - 20, "|", initq, xformhist, incxform, &palette).expect("Prompt failed");
 			if res == "" {
-				let root = Rc::clone(self.source.reject());
-				self.setroot(Rc::clone(&root));
+				let root = Arc::clone(self.source.reject());
+				self.setroot(Arc::clone(&root));
 			}
 			else {
 				self.source.accept();
@@ -507,7 +509,7 @@ impl<'a> Tree<'a> {
 
 	fn invokesel(&mut self) {
 		let sel = self.sel.upgrade().expect("Couldn't get selection in invokesel");
-		sel.borrow().invoke();
+		sel.lock().expect("Poisoned lock").invoke();
 		self.redraw();
 	}
 
@@ -559,7 +561,7 @@ impl<'a> Tree<'a> {
 
 	fn yanksel(&self) {
 		use clipboard::{ClipboardProvider, ClipboardContext};
-		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").borrow().yank();
+		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").lock().expect("Poisoned lock").yank();
 		let maybe_clip: std::result::Result<ClipboardContext, Box<dyn std::error::Error>> = ClipboardProvider::new();
 		// Swallowing an error getting the clipboard here isn't the best thing, but it's not the worst, and I'm not sure what the
 		// better option is given the policy of no runtime errors during interactive session
@@ -568,7 +570,7 @@ impl<'a> Tree<'a> {
 		}
 	}
 
-	fn seek(&self, rel: &dyn Fn(&Rc<RefCell<Node<'a>>>) -> Weak<RefCell<Node<'a>>>) -> Rc<RefCell<Node<'a>>> {
+	fn seek(&self, rel: &dyn Fn(&Arc<Mutex<Node<'a>>>) -> Weak<Mutex<Node<'a>>>) -> Arc<Mutex<Node<'a>>> {
 		let mut ret = self.sel.upgrade().expect("Couldn't get selection in seek");
 		for _ in 1..=self.getnum() {
 			let next = rel(&ret);
@@ -581,7 +583,7 @@ impl<'a> Tree<'a> {
 	pub fn interactive(&mut self) {
 		use curses::ncstr;
 		let digits = (0..=9).map(|x| ncstr(&x.to_string())).collect::<Vec<Vec<i32>>>();
-		let done = Rc::new(RefCell::new(false));
+		let done = Arc::new(Mutex::new(false));
 		let d = done.clone();
 		let mut keys: Keybinder<Self> = Keybinder::new();
 
@@ -594,11 +596,11 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
 		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
-		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::next(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::prev(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::nextsib(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::prevsib(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Rc<RefCell<Node<'a>>>| Node::parent(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::next(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prev(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::nextsib(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prevsib(&n).clone()); dt.select(sel, true); }));
+		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::parent(&n).clone()); dt.select(sel, true); }));
 		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.first(); dt.select(sel, true); }));
 		keys.register(&[&ncstr("G"), &[ncurses::KEY_END]], Box::new(|dt, _| { let sel = dt.last(); dt.select(sel, true); }));
 		keys.register(&[&ncstr("H")], Box::new(|dt, _| { dt.selpos(0); }));
@@ -617,29 +619,21 @@ impl<'a> Tree<'a> {
 		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
 		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
 		keys.register(&[&ncstr("|")], Box::new(|dt, _| { dt.transform(""); }));
-		keys.register(&[&ncstr("C")], Box::new(|dt, _| { let root = Rc::clone(dt.source.clear()); dt.setroot(root); }));
+		keys.register(&[&ncstr("C")], Box::new(|dt, _| { let root = Arc::clone(dt.source.clear()); dt.setroot(root); }));
 		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
 		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); dt.select(dt.first(), true); }));
 		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
-		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.borrow_mut() = true; }));
-		keys.register(&[&ncstr("-")], Box::new(|dt, _| {
-			let mut node = (0..dt.getnum()).fold(dt.sel.upgrade().unwrap(), |n, _| Node::prev(&n).upgrade().unwrap_or(n));
-			dt.accordion(&mut node, &|mut sel, w| Node::toggle(&mut sel, w));
-		}));
-		keys.register(&[&ncstr("=")], Box::new(|dt, _| {
-			let mut node = (0..dt.getnum()).fold(dt.sel.upgrade().unwrap(), |n, _| Node::next(&n).upgrade().unwrap_or(n));
-			dt.accordion(&mut node, &|mut sel, w| Node::toggle(&mut sel, w));
-		}));
+		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.lock().expect("Poisoned lock") = true; }));
 
 		self.resize();
 		self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
-		while !*done.borrow() {
+		while !*done.lock().expect("Poisoned lock") {
 			let (maybe_action, cmd) = keys.wait(self);
 			if let Some(action) = maybe_action {
 				let lambda: &mut dyn FnMut(&mut Self, &[i32]) = &mut *action.borrow_mut();
 				let lock = Arc::clone(&self.lock);
-				let _guard = lock.lock();
+				let _guard = lock.lock().expect("Poisoned lock");
 				lambda(self, &cmd);
 			}
 			if !digits.contains(&cmd) { self.clearnum(); }

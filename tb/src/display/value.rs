@@ -1,5 +1,4 @@
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use ::regex::Regex;
 use ::interface::Format;
 use ::format::FmtCmd;
@@ -27,24 +26,31 @@ fn fmtcmd_from_format(fmt: Format) -> FmtCmd {
 
 pub struct Value<'a> {
 	v: BackendValue<'a>,
-	pub parent: Option<Rc<RefCell<Value<'a>>>>,
+	pub parent: Option<Arc<Mutex<Value<'a>>>>,
 	pub index: usize,
-	childcache: Option<Vec<Rc<RefCell<Value<'a>>>>>,
+	childcache: Option<Vec<Arc<Mutex<Value<'a>>>>>,
 }
 
 impl<'a> PartialEq for Value<'a> {
 	fn eq(&self, other: &Self) -> bool {
-		self.index == other.index && self.parent == other.parent
+		if self.index == other.index {
+			match (self.parent.as_ref(), other.parent.as_ref()) {
+				(None, None) => true,
+				(Some(a), Some(b)) => Arc::ptr_eq(&a, &b),
+				_ => false,
+			}
+		}
+		else { false }
 	}
 }
 
 impl<'a> Eq for Value<'a> { }
 
-type Ref<'a> = Rc<RefCell<Value<'a>>>;
+type Ref<'a> = Arc<Mutex<Value<'a>>>;
 
 impl<'a> Value<'a> {
-	pub fn new_raw(v: BackendValue<'a>, parent: Option<Rc<RefCell<Value<'a>>>>, index: usize) -> Ref<'a> {
-		Rc::new(RefCell::new(Value { v: v, parent: parent, index: index, childcache: None }))
+	pub fn new_raw(v: BackendValue<'a>, parent: Option<Arc<Mutex<Value<'a>>>>, index: usize) -> Ref<'a> {
+		Arc::new(Mutex::new(Value { v: v, parent: parent, index: index, childcache: None }))
 	}
 
 	pub fn new_root(v: BackendValue<'a>) -> Ref<'a> {
@@ -69,19 +75,19 @@ impl<'a> Value<'a> {
 
 	pub fn children(this: &Ref<'a>) -> Vec<Ref<'a>> {
 		fn getchildren<'a>(this: &Ref<'a>) -> Vec<Ref<'a>> {
-			if this.borrow().v.expandable() {
-				this.borrow().v.children().into_iter().enumerate()
+			if this.lock().expect("Poisoned lock").v.expandable() {
+				this.lock().expect("Poisoned lock").v.children().into_iter().enumerate()
 					.map(|(i, child)| Value::new_raw(child, Some(this.clone()), i)).collect()
 			}
 			else {
 				vec![]
 			}
 		}
-		if this.borrow().childcache.is_none() {
+		if this.lock().expect("Poisoned lock").childcache.is_none() {
 			let cached = Some(getchildren(this));
-			this.borrow_mut().childcache = cached;
+			this.lock().expect("Poisoned lock").childcache = cached;
 		}
-		this.borrow().childcache.clone().expect("No cached children")
+		this.lock().expect("Poisoned lock").childcache.clone().expect("No cached children")
 	}
 
 	pub fn refresh(&mut self) {
@@ -89,7 +95,7 @@ impl<'a> Value<'a> {
 	}
 
 	fn root(this: &Ref<'a>) -> Ref<'a> {
-		match &this.borrow().parent {
+		match &this.lock().expect("Poisoned lock").parent {
 			None => this.clone(),
 			Some(parent) => Self::root(parent),
 		}
@@ -101,11 +107,12 @@ impl<'a> Value<'a> {
 
 	fn next(this: &Ref<'a>) -> Option<Ref<'a>> {
 		fn nextsib<'a>(me: &Ref<'a>) -> Option<Ref<'a>> {
-			match &me.borrow().parent {
+			let parent = me.lock().expect("Poisoned lock").parent.as_ref().cloned();
+			match &parent {
 				None => None,
 				Some(parent) => {
 					let siblings = Value::children(&parent);
-					let index = me.borrow().index;
+					let index = me.lock().expect("Poisoned lock").index;
 					if index < siblings.len() - 1 {
 						Some(siblings[index + 1].clone())
 					}
@@ -123,10 +130,11 @@ impl<'a> Value<'a> {
 	}
 
 	fn prev(this: &Ref<'a>) -> Option<Ref<'a>> {
-		match &this.borrow().parent {
+		let parent = this.lock().expect("Poisoned lock").parent.as_ref().cloned();
+		match &parent {
 			None => None,
 			Some(parent) => {
-				match this.borrow().index {
+				match this.lock().expect("Poisoned lock").index {
 					0 => Some(parent.clone()),
 					index => Some(Self::last(&Self::children(&parent)[index - 1])),
 				}
@@ -146,10 +154,10 @@ impl<'a> Value<'a> {
 					false => Self::last(&Self::root(this)),
 				},
 			};
-			if cur.borrow().content().contains(query) {
+			if cur.lock().expect("Poisoned lock").content().contains(query) {
 				return Some(cur);
 			}
-			else if cur == *this {
+			else if Arc::ptr_eq(&cur, this) {
 				return None;
 			}
 		}
@@ -159,7 +167,7 @@ impl<'a> Value<'a> {
 		match &self.parent {
 			None => vec![],
 			Some(parent) => {
-				let mut ret = parent.borrow().path();
+				let mut ret = parent.lock().expect("Poisoned lock").path();
 				ret.push(self.index);
 				ret
 			}
