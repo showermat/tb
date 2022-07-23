@@ -210,14 +210,17 @@ impl<'a> Node<'a> {
 
 	fn mark_loading(mut this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
 		this.lock().expect("Poisoned lock").children.clear();
-		let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.lock().expect("Poisoned lock").value.clone()), 0);
+		// This is blocked on multi-threading the code, since I want to wait a few milliseconds to
+		// see if the children finish loading before taking the time to do a screen redraw to
+		// display the loading node.
+		/*let val = Value::new_raw(Box::new(StatMsg::new("Loading...".to_string(), 1)), Some(this.lock().expect("Poisoned lock").value.clone()), 0);
 		let mut node = Arc::new(Mutex::new(Self::new(Arc::downgrade(this), val, width, true, false)));
 		{
 			let mut mut_this = this.lock().expect("Poisoned lock");
 			mut_this.next = mut_this.nextsib.clone();
 			mut_this.children.push(node.clone());
 		}
-		Self::insert(&mut this, &mut node);
+		Self::insert(&mut this, &mut node);*/
 		this.lock().expect("Poisoned lock").state = State::Loading;
 	}
 
@@ -259,6 +262,34 @@ impl<'a> Node<'a> {
 			Self::mark_loading(this, width);
 			Self::load_children(this, width);
 			Self::finish_loading(this);
+			// The below code should load children in a different thread to avoid blocking the user
+			// on slow loads.  Unfortunately, it looks like it's strictly forbidden to send data
+			// with non-static lifetimes across threads, and there's no good workaround for this.
+			// Hopefully I'll figure it out some day, but until then we're stuck with
+			// single-threaded updates.
+			/*use std::sync::Condvar;
+			use std::thread;
+			use std::time::Duration;
+			Self::mark_loading(this, width);
+			let notify = Arc::new((Mutex::new(0), Condvar::new())); // 0 = still loading, 1 = done loading and caller reloads, 2 = caller exited so thread reloads
+			let (thread_this, thread_notify) = (this.clone(), notify.clone());
+			thread::spawn(move || {
+				let (lock, cond) = &*thread_notify;
+				Self::load_children(&mut thread_this, width);
+				let mut state = lock.lock().expect("Poisoned lock");
+				if *state == 2 {
+					Self::finish_loading(&mut thread_this);
+					// Callback
+				}
+				else {
+					*state = 1;
+					cond.notify_all();
+				}
+			});
+			let (lock, cond) = &*notify;
+			let mut state = cond.wait_timeout(lock.lock().expect("Poisoned lock"), Duration::from_millis(1000)).expect("Poisoned lock").0;
+			if *state == 1 { Self::finish_loading(this); }
+			else { *state = 2 }*/
 		}
 	}
 
