@@ -1,6 +1,6 @@
 use std::process::{Command, Stdio};
 use std::io::{Read, Write};
-use std::rc::Rc;
+use std::sync::Arc;
 use ::interface::*;
 use ::errors::*;
 
@@ -23,13 +23,13 @@ impl<'a> Value<'a> for TxtValue {
 }
 
 pub struct TxtSource {
-	buf: Rc<String>,
+	buf: Arc<String>,
 	sep: String,
 }
 
 impl Source for TxtSource {
 	fn root<'a>(&'a self) -> Box<dyn Value<'a> + 'a> {
-		Box::new(TxtSource { buf: Rc::clone(&self.buf), sep: self.sep.clone() })
+		Box::new(TxtSource { buf: Arc::clone(&self.buf), sep: self.sep.clone() })
 	}
 
 	fn transform(&self, transformation: &str) -> errors::Result<Box<dyn Source>> {
@@ -40,7 +40,7 @@ impl Source for TxtSource {
 			instream.write_all(self.buf.as_bytes()).chain_err(|| "Failed to send input to transform command")?;
 			let output = proc.wait_with_output().chain_err(|| "Couldn't get output from transform command")?;
 			if !output.status.success() { bail!(String::from_utf8_lossy(&output.stderr).to_string()) }
-			Ok(Box::new(TxtSource { buf: Rc::new(String::from_utf8_lossy(&output.stdout).to_string()), sep: self.sep.clone() }))
+			Ok(Box::new(TxtSource { buf: Arc::new(String::from_utf8_lossy(&output.stdout).to_string()), sep: self.sep.clone() }))
 		}
 	}
 }
@@ -90,7 +90,7 @@ Arguments:
 				let mut inlock = stdin.lock();
 				let mut buf = vec![];
 				match inlock.read_to_end(&mut buf).chain_err(|| "Couldn't read stdin") {
-					Ok(_) => Some(Ok(Box::new(TxtSource { buf: Rc::new(String::from_utf8_lossy(&buf).to_string()), sep: sep }))),
+					Ok(_) => Some(Ok(Box::new(TxtSource { buf: Arc::new(String::from_utf8_lossy(&buf).to_string()), sep: sep }))),
 					Err(e) => Some(Err(e)),
 				}
 			},

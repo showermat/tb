@@ -190,7 +190,7 @@ impl<'a, T> Prompt<'a, T> {
 		loop {
 			match curses::read(-1) {
 				Key::Char('\x0a') => return Ok(self.buf.iter().collect::<String>()), // Enter
-				Key::Char('\x7f') => { // Backspace
+				Key::Char('\x7f') | Key::Special(ncurses::KEY_BACKSPACE) => { // Backspace
 					if self.pos <= 0 { continue; }
 					self.seek(-1)?;
 					let rmwidth = charwidth(self.buf[self.pos]);
@@ -219,6 +219,7 @@ impl<'a, T> Prompt<'a, T> {
 				}
 				Key::Char('\x01') | Key::Special(ncurses::KEY_HOME) => { let newpos = -(self.pos as isize); self.seek(newpos)?; }, // ^A
 				Key::Char('\x05') | Key::Special(ncurses::KEY_END) => { let newpos = (self.buf.len() - self.pos) as isize; self.seek(newpos)?; }, // ^E
+				Key::Char('\x15') | Key::Special(ncurses::KEY_CLEAR) => { self.reset("")?; }, // ^U
 				Key::Char('\x1b') => { return Ok("".to_string()); }, // Escape
 				Key::Special(ncurses::KEY_RIGHT) => self.seek(1)?,
 				Key::Special(ncurses::KEY_LEFT) => self.seek(-1)?,

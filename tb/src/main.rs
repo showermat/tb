@@ -7,6 +7,7 @@ extern crate itertools;
 extern crate clipboard;
 extern crate owning_ref;
 extern crate tb_interface as interface;
+extern crate textproto;
 
 mod display;
 mod keybinder;
@@ -107,6 +108,7 @@ fn run() -> Result<()> {
 		backends::json::get_factory(),
 		backends::fs::get_factory(),
 		backends::txt::get_factory(),
+		backends::textproto::get_factory(),
 	];
 	let (plugins, load_errors) = extract_errors(load_plugins().unwrap_or(vec![])); // Do NOT consume `plugins`!  Use `iter`, not `into_iter`.  Otherwise the symbols extracted from it will end up with dangling pointers and you have fun segfault time.
 	let (plugin_backends, factory_errors) = extract_errors(plugins.iter().map(|(path, lib)| unsafe {

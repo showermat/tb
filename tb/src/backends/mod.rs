@@ -19,4 +19,5 @@ fn fmtstr(s: &str, ctrlcolor: usize) -> ::interface::Format {
 
 pub mod json;
 pub mod fs;
+pub mod textproto;
 pub mod txt;

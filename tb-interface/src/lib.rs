@@ -104,7 +104,7 @@ pub struct Color {
 /// handle the error internally -- which it should do, either silently or by creating a `Value`
 /// node exposing the error message -- or it is a fatal error and the backend should simply panic
 /// and the application will clean up and abort.
-pub trait Value<'a> {
+pub trait Value<'a> : Send {
 	/// Returns the format tree representing the content of this node.
 	fn content(&self) -> Format;
 	
@@ -165,7 +165,7 @@ pub trait Factory {
 	/// simply exit normally.  If there is some problem with the input, return `Some(Err)` and TB
 	/// will print an error trace and abort.  Otherwise, return `Some(Ok(Box<Source>))` and TB will
 	/// enter interactive mode.
-	fn from(&self, &[&str]) -> Option<errors::Result<Box<dyn Source>>>;
+	fn from(&self, args: &[&str]) -> Option<errors::Result<Box<dyn Source>>>;
 
 	/// Return a list of colors to be used in rendering the tree.  This sets the internal palette
 	/// used by the tree.  A color can then be used by specifying its index in this vector in the

@@ -7,6 +7,7 @@ const HI_STR: usize = 0;
 const HI_KWD: usize = 1;
 const HI_KEY: usize = 2;
 const HI_MUT: usize = 3;
+const HI_NUM: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
 enum ParentType {
@@ -38,7 +39,7 @@ impl<'a> JsonValue<'a> {
 	fn fmtval(&self) -> Format {
 		match self.value {
 			V::String(s) => color(HI_STR, Self::fmtstr(s)),
-			V::Number(n) => color(HI_KWD, lit(&n.to_string())),
+			V::Number(n) => color(HI_NUM, lit(&n.to_string())),
 			V::Bool(b) => color(HI_KWD, lit(if *b { "true" } else { "false" })),
 			V::Object(items) => nosearch(color(HI_KWD, lit(if items.is_empty() { "{ }" } else { "{...}" }))),
 			V::Array(items) => nosearch(color(HI_KWD, lit(if items.is_empty() { "[ ]" } else { "[...]" }))),
@@ -133,6 +134,7 @@ Copyright (GPLv3) 2020 Matthew Schauer
 			Color { c8: 1, c256: 214 }, // keyword
 			Color { c8: 5, c256: 177 }, // key
 			Color { c8: 4, c256: 244 }, // muted
+			Color { c8: 6, c256: 204 }, // number
 		]
 	}
 }

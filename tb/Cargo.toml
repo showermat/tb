@@ -15,6 +15,6 @@ libloading = "0.5"
 itertools = "0.8"
 clipboard = "0.5"
 owning_ref = "0.4"
-#jq-rs = "0.4"
-jq-rs = {path = "../../jq-rs"}
+jq-rs = "0.4"
 tb-interface = {path = "../tb-interface"}
+textproto = {path = "../../textproto/textproto"}
