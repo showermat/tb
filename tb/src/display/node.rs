@@ -5,7 +5,6 @@ use ::curses;
 use super::value::Value;
 use ::interface::Value as BackendValue;
 use super::COLWIDTH;
-use super::statmsg::StatMsg;
 
 struct NodeCache {
 	prefix0: String,
@@ -208,7 +207,7 @@ impl<'a> Node<'a> {
 		self.value.lock().expect("Poisoned lock").expandable()
 	}
 
-	fn mark_loading(mut this: &mut Arc<Mutex<Node<'a>>>, width: usize) {
+	fn mark_loading(this: &mut Arc<Mutex<Node<'a>>>, _width: usize) {
 		this.lock().expect("Poisoned lock").children.clear();
 		// This is blocked on multi-threading the code, since I want to wait a few milliseconds to
 		// see if the children finish loading before taking the time to do a screen redraw to

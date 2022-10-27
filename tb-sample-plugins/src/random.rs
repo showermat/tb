@@ -1,6 +1,6 @@
 use ::tb_interface::*;
-use ::errors::Result;
 use ::rand::Rng;
+use anyhow::Result;
 
 pub struct Rand {
 	depth: usize,

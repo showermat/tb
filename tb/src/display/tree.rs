@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time;
 use ::curses;
-use ::errors::*;
 use ::interface::*;
 use ::keybinder::Keybinder;
 use ::owning_ref::OwningHandle;
@@ -11,6 +10,7 @@ use ::regex::Regex;
 use super::node::{Node, State};
 use super::pos::Pos;
 use super::statmsg::StatMsg;
+use anyhow::Result;
 
 type OwnedRoot<'a> = OwningHandle<Box<dyn Source>, Box<Arc<Mutex<Node<'a>>>>>;
 
@@ -75,6 +75,8 @@ pub struct Tree<'a> {
 	numbuf: Vec<char>, // Buffer for numbers entered to prefix a command
 	palette: curses::Palette, // Colors available for drawing this tree
 	settings: Settings, // Configuration info
+	quit: Arc<Mutex<bool>>, // Whether we should quit after next update
+	msg: String, // Current message to desplay in the status bar
 	lock: Arc<Mutex<()>>, // Single-thread all updates
 }
 
@@ -101,6 +103,8 @@ impl<'a> Tree<'a> {
 			palette: palette,
 			root: root,
 			settings: settings,
+			quit: Arc::new(Mutex::new(false)),
+			msg: String::new(),
 			lock: Arc::new(Mutex::new(())),
 		})
 	}
@@ -175,14 +179,17 @@ impl<'a> Tree<'a> {
 		(cmp::max(self.offset, 0) as usize, cmp::min((self.offset + lines as isize) as usize, self.size.h))
 	}
 
+	fn echo(&mut self, s: String) {
+		self.msg = s;
+	}
+
 	fn statline(&self) {
-		let writeat = |x: usize, s: &str| {
-			if s != "" { ncurses::mvaddstr(self.size.h as i32, (x + 1) as i32, s); }
-		};
 		if self.check_term_size() {
 			ncurses::mv(self.size.h as i32, 0);
 			ncurses::clrtoeol();
-			writeat(self.size.w - 8, &self.numbuf.iter().collect::<String>());
+			ncurses::addstr(&self.msg); // TODO Truncate to fit
+			ncurses::mv(self.size.h as i32, self.size.w as i32 - 8);
+			ncurses::addstr(&self.numbuf.iter().collect::<String>());
 		}
 	}
 
@@ -294,6 +301,7 @@ impl<'a> Tree<'a> {
 
 	fn resize(&mut self) {
 		let mut size = curses::scrsize();
+		if size.h < 1 { size.h = 1; }
 		size.h -= 1;
 		self.size = size;
 		if self.check_term_size() {
@@ -486,7 +494,7 @@ impl<'a> Tree<'a> {
 				let root = match dt.source.propose(query, dt.size.w, dt.settings.hide_root) {
 					Ok(tree) => Arc::clone(tree),
 					Err(error) => {
-						let message = error.iter().fold("Error:".to_string(), |acc, x| acc + "\n" + &x.to_string()).to_string();
+						let message = error.chain().fold("Error:".to_string(), |acc, x| acc + "\n" + &x.to_string()).to_string();
 						Arc::new(Mutex::new(Node::new_root(Box::new(StatMsg::new(message, 2)), dt.size.w, false)))
 					},
 				};
@@ -544,11 +552,6 @@ impl<'a> Tree<'a> {
 		self.statline();
 	}
 
-	fn clearnum(&mut self) {
-		self.numbuf = vec![];
-		self.statline();
-	}
-
 	fn getnum(&self) -> usize {
 		match self.numbuf.is_empty() {
 			true => 1,
@@ -560,13 +563,11 @@ impl<'a> Tree<'a> {
 	}
 
 	fn yanksel(&self) {
-		use clipboard::{ClipboardProvider, ClipboardContext};
-		let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").lock().expect("Poisoned lock").yank();
-		let maybe_clip: std::result::Result<ClipboardContext, Box<dyn std::error::Error>> = ClipboardProvider::new();
 		// Swallowing an error getting the clipboard here isn't the best thing, but it's not the worst, and I'm not sure what the
 		// better option is given the policy of no runtime errors during interactive session
-		if let Ok(mut clip) = maybe_clip {
-			let _ = clip.set_contents(data);
+		if let Ok(mut clip) = arboard::Clipboard::new() {
+			let data = self.sel.upgrade().expect("Couldn't get selection in yanksel").lock().expect("Poisoned lock").yank();
+			let _ = clip.set_text(data);
 		}
 	}
 
@@ -580,55 +581,144 @@ impl<'a> Tree<'a> {
 		ret
 	}
 
-	pub fn interactive(&mut self) {
-		use curses::ncstr;
-		let digits = (0..=9).map(|x| ncstr(&x.to_string())).collect::<Vec<Vec<i32>>>();
-		let done = Arc::new(Mutex::new(false));
-		let d = done.clone();
-		let mut keys: Keybinder<Self> = Keybinder::new();
+	fn command(&mut self, cmd: &[&str]) -> Result<()> {
+		match &cmd[..] {
+			&["select", dir] => match dir {
+				"prev" => { let sel = self.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prev(&n).clone()); self.select(sel, true); },
+				"next" => { let sel = self.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::next(&n).clone()); self.select(sel, true); },
+				"prevsib" => { let sel = self.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prevsib(&n).clone()); self.select(sel, true); },
+				"nextsib" => { let sel = self.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::nextsib(&n).clone()); self.select(sel, true); },
+				"parent" => { let sel = self.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::parent(&n).clone()); self.select(sel, true); },
+				"first" => { let sel = self.first(); self.select(sel, true); },
+				"last" => { let sel = self.last(); self.select(sel, true); },
+				"top" => { self.selpos(0); },
+				"middle" => { let pos = self.size.h / 2; self.selpos(pos); },
+				"bottom" => { let pos = self.size.h - 1; self.selpos(pos); },
+				_ => bail!("Unknown direction"),
+			},
+			&["scroll", dir] => match dir {
+				"up" => { self.scroll(-1); },
+				"down" => { self.scroll(1); },
+				"center" => { let dist = self.offset - (self.size.h as isize) / 2; self.scroll(dist); },
+				_ => bail!("Unknown direction"),
+			},
+			&["scroll", dir, frac] => {
+				let numfrac = frac.parse::<usize>().unwrap();
+				match dir {
+					"up" => { let dist = self.getnum() * self.size.h * numfrac / 100; self.scroll(-(dist as isize)); },
+					"down" => { let dist = self.getnum() * self.size.h * numfrac / 100; self.scroll(dist as isize); },
+					_ => bail!("Unknown direction"),
+				};
+			},
+			&["node", act] => match act {
+				"expand" => { self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w)) },
+				"recursive-expand" => { self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::recursive_expand(&mut sel, w)) },
+				"collapse" => { self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, _| Node::collapse(&mut sel)) },
+				"toggle" => { self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::toggle(&mut sel, w)) },
+				_ => bail!("Unknown action"),
+			},
+			&["search", act] => match act {
+				"forward" => { self.search(true); },
+				"backward" => { self.search(false); },
+				"next" => { let n = self.getnum() as isize; self.searchnext(n); },
+				"prev" => { let n = -(self.getnum() as isize); self.searchnext(n); },
+				"clear" => { self.setquery(None); },
+				_ => bail!("Unknown action"),
+			}
+			&["transform"] => { self.transform(""); },
+			&["transform", "reset"] => { let root = Arc::clone(self.source.clear()); self.setroot(root); },
+			&["invoke"] => { self.invokesel(); },
+			&["yank"] => { self.yanksel(); },
+			&["refresh", node] => match node {
+				"root" => { self.refresh(&mut self.root.clone()); self.select(self.first(), true); },
+				"current" => { self.refresh(&mut self.sel.upgrade().expect("Couldn't get selection in refresh")); },
+				_ => bail!("Unknown node"),
+			},
+			&["redraw"] => { self.redraw(); },
+			&["command"] => { self.cmdline(); },
+			&["echo", ref args @ ..] => { self.echo(args.join(" ")); },
+			&["q"] => { *self.quit.lock().expect("Poisoned lock") = true; },
+			&["quit"] => { *self.quit.lock().expect("Poisoned lock") = true; },
+			&["nop"] => { },
+			&[] => { },
+			_ => bail!("Unknown command"),
+		}
+		Ok(())
+	}
 
+	fn cmdline(&mut self) {
+		let inccb = Box::new(|_: &mut Tree, _: &str| { });
+		let palette = self.palette.clone();
+		let res = ::prompt::prompt(self, (self.size.h, 0), self.size.w - 20, ":", "", vec![], inccb, &palette).expect("Prompt failed");
+		if res != "" {
+			// Someday, we may want to replace this with "real" parsing with Nom.  In that case, be
+			// sure to replace the `cmd.split()` in `interactive()` below as well.
+			let tokens = Regex::new("\\s+").expect("Invalid internal regex").split(&res).collect::<Vec<&str>>();
+			if let Err(e) = self.command(&tokens) {
+				self.echo(e.to_string());
+			}
+		}
+	}
+
+	pub fn interactive(&mut self) {
+		let digits = ('0'..='9').map(|x| vec![x as i32]).collect::<Vec<Vec<i32>>>();
+		let mut keys: Keybinder<Self> = Keybinder::new();
+		let keymap = HashMap::from([
+			("j", "select next"),
+			("Down", "select next"),
+			("J", "select nextsib"),
+			("k", "select prev"),
+			("Up", "select prev"),
+			("K", "select prevsib"),
+			("p", "select parent"),
+			("g", "select first"),
+			("G", "select last"),
+			("H", "select top"),
+			("M", "select middle"),
+			("L", "select bottom"),
+			("\\ ", "node toggle"),
+			("Left", "node collapse"),
+			("Right", "node expand"),
+			("x", "node recursive-expand"),
+			("^F", "scroll down 100"),
+			("Next", "scroll down 100"),
+			("^B", "scroll up 100"),
+			("Prior", "scroll up 100"),
+			("^D", "scroll down 50"),
+			("^U", "scroll up 50"),
+			("^E", "scroll down"),
+			("^Y", "scroll up"),
+			("z z", "scroll center"),
+			("/", "search forward"),
+			("?", "search backward"),
+			("n", "search next"),
+			("N", "search prev"),
+			("c", "search clear"),
+			("|", "transform"),
+			("C", "transform reset"),
+			("r", "refresh current"),
+			("R", "refresh root"),
+			("y", "yank"),
+			("\n", "invoke"),
+			("^L", "redraw"),
+			(":", "command"),
+			("q", "quit"),
+		]);
+		for (key, cmd) in keymap {
+			let cmdparts = cmd.split(' ').collect::<Vec<&str>>();
+			match curses::parse_keysyms(key) {
+				Ok(keyseq) => { keys.register(&[&keyseq], Box::new(move |dt, _| { if let Err(e) = dt.command(&cmdparts) { dt.echo(e.to_string()); } })); },
+				Err(e) => self.echo(e.to_string()),
+			}
+		}
+		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
 		keys.register(&[&[ncurses::KEY_RESIZE]], Box::new(|dt, _| { dt.resize(); }));
 		keys.register(&[&[ncurses::KEY_MOUSE]], Box::new(|dt, _| dt.mouse(curses::mouseevents())));
-		keys.register(&[&ncstr(" ")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::toggle(&mut sel, w))));
-		keys.register(&[&ncstr("x")], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::recursive_expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_RIGHT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w))));
-		keys.register(&[&[ncurses::KEY_LEFT]], Box::new(|dt, _| dt.accordion(&mut dt.sel.upgrade().expect("Couldn't get selection"), &|mut sel, _| Node::collapse(&mut sel))));
-		keys.register(&[&ncstr("\n")], Box::new(|dt, _| dt.invokesel()));
-		keys.register(&digits.iter().map(|x| &x[..]).collect::<Vec<&[i32]>>(), Box::new(|dt, digit| dt.addnum(digit[0] as u8 as char)));
-		keys.register(&[&[0xc]], Box::new(|dt, _| dt.redraw())); // ^L
-		keys.register(&[&ncstr("j"), &[ncurses::KEY_DOWN]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::next(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("k"), &[ncurses::KEY_UP]], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prev(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("J")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::nextsib(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("K")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::prevsib(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("p")], Box::new(|dt, _| { let sel = dt.seek(&|n: &Arc<Mutex<Node<'a>>>| Node::parent(&n).clone()); dt.select(sel, true); }));
-		keys.register(&[&ncstr("g"), &[ncurses::KEY_HOME]], Box::new(|dt, _| { let sel = dt.first(); dt.select(sel, true); }));
-		keys.register(&[&ncstr("G"), &[ncurses::KEY_END]], Box::new(|dt, _| { let sel = dt.last(); dt.select(sel, true); }));
-		keys.register(&[&ncstr("H")], Box::new(|dt, _| { dt.selpos(0); }));
-		keys.register(&[&ncstr("M")], Box::new(|dt, _| { let pos = dt.size.h / 2; dt.selpos(pos); }));
-		keys.register(&[&ncstr("L")], Box::new(|dt, _| { let pos = dt.size.h - 1; dt.selpos(pos); }));
-		keys.register(&[&[0x6], &[ncurses::KEY_NPAGE]], Box::new(|dt, _| { let dist = dt.getnum() * dt.size.h; dt.scroll(dist as isize); })); // ^F
-		keys.register(&[&[0x2], &[ncurses::KEY_PPAGE]], Box::new(|dt, _| { let dist = dt.getnum() * dt.size.h; dt.scroll(-(dist as isize)); })); // ^B
-		keys.register(&[&[0x4]], Box::new(|dt, _| { let dist = dt.getnum() * dt.size.h / 2; dt.scroll(dist as isize); })); // ^D
-		keys.register(&[&[0x15]], Box::new(|dt, _| { let dist = dt.getnum() * dt.size.h / 2; dt.scroll(-(dist as isize)); })); // ^U
-		keys.register(&[&[0x5]], Box::new(|dt, _| { dt.scroll(1); })); // ^E
-		keys.register(&[&[0x19]], Box::new(|dt, _| { dt.scroll(-1); })); // ^Y
-		keys.register(&[&ncstr("zz")], Box::new(|dt, _| { let dist = dt.offset - (dt.size.h as isize) / 2; dt.scroll(dist); }));
-		keys.register(&[&ncstr("/")], Box::new(|dt, _| { dt.search(true); }));
-		keys.register(&[&ncstr("?")], Box::new(|dt, _| { dt.search(false); }));
-		keys.register(&[&ncstr("n")], Box::new(|dt, _| { let n = dt.getnum() as isize; dt.searchnext(n); }));
-		keys.register(&[&ncstr("N")], Box::new(|dt, _| { let n = -(dt.getnum() as isize); dt.searchnext(n); }));
-		keys.register(&[&ncstr("c")], Box::new(|dt, _| { dt.setquery(None); }));
-		keys.register(&[&ncstr("|")], Box::new(|dt, _| { dt.transform(""); }));
-		keys.register(&[&ncstr("C")], Box::new(|dt, _| { let root = Arc::clone(dt.source.clear()); dt.setroot(root); }));
-		keys.register(&[&ncstr("r")], Box::new(|dt, _| { dt.refresh(&mut dt.sel.upgrade().expect("Couldn't get selection in refresh")); }));
-		keys.register(&[&ncstr("R")], Box::new(|dt, _| { dt.refresh(&mut dt.root.clone()); dt.select(dt.first(), true); }));
-		keys.register(&[&ncstr("y")], Box::new(|dt, _| { dt.yanksel(); }));
-		keys.register(&[&ncstr("q")], Box::new(move |_, _| { *d.lock().expect("Poisoned lock") = true; }));
 
 		self.resize();
 		self.accordion(&mut self.sel.upgrade().expect("Couldn't get selection"), &|mut sel, w| Node::expand(&mut sel, w));
 		self.select(self.first(), false);
-		while !*done.lock().expect("Poisoned lock") {
+		while !*self.quit.lock().expect("Poisoned lock") {
 			let (maybe_action, cmd) = keys.wait(self);
 			if let Some(action) = maybe_action {
 				let lambda: &mut dyn FnMut(&mut Self, &[i32]) = &mut *action.borrow_mut();
@@ -636,7 +726,9 @@ impl<'a> Tree<'a> {
 				let _guard = lock.lock().expect("Poisoned lock");
 				lambda(self, &cmd);
 			}
-			if !digits.contains(&cmd) { self.clearnum(); }
+			if !digits.contains(&cmd) { self.numbuf.clear(); }
+			self.statline();
+			self.msg.clear();
 		}
 	}
 }

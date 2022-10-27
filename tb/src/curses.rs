@@ -7,8 +7,73 @@ extern crate libc_stdhandle;
 use self::ncurses::*;
 use self::libc_stdhandle::*;
 use std::ffi::CString;
+use std::collections::HashMap;
 use ::interface::Color;
-use ::errors::*;
+use anyhow::{Error, Result};
+use nom::IResult;
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::character::complete::*;
+use nom::combinator::*;
+use nom::multi::*;
+use nom::sequence::*;
+
+lazy_static! {
+	static ref KEYSYMS: HashMap<&'static str, i32> = HashMap::from([
+		("Down", KEY_DOWN),
+		("Up", KEY_UP),
+		("Left", KEY_LEFT),
+		("Right", KEY_RIGHT),
+		("Home", KEY_HOME),
+		("Backspace", KEY_BACKSPACE),
+		("F0", KEY_F0),
+		("F1", KEY_F1),
+		("F2", KEY_F2),
+		("F3", KEY_F3),
+		("F4", KEY_F4),
+		("F5", KEY_F5),
+		("F6", KEY_F6),
+		("F7", KEY_F7),
+		("F8", KEY_F8),
+		("F9", KEY_F9),
+		("F10", KEY_F10),
+		("F11", KEY_F11),
+		("F12", KEY_F12),
+		("F13", KEY_F13),
+		("F14", KEY_F14),
+		("F15", KEY_F15),
+		("Clear", KEY_CLEAR),
+		("Prior", KEY_PPAGE),
+		("PageUp", KEY_PPAGE),
+		("Next", KEY_NPAGE),
+		("PageDown", KEY_NPAGE),
+		("Print", KEY_PRINT),
+		("Begin", KEY_BEG),
+		("Cancel", KEY_CANCEL),
+		("Close", KEY_CLOSE),
+		("Command", KEY_COMMAND),
+		("Copy", KEY_COPY),
+		("Create", KEY_CREATE),
+		("End", KEY_END),
+		("Exit", KEY_EXIT),
+		("Find", KEY_FIND),
+		("Help", KEY_HELP),
+		("Mark", KEY_MARK),
+		("Message", KEY_MESSAGE),
+		("Move", KEY_MOVE),
+		("Open", KEY_OPEN),
+		("Options", KEY_OPTIONS),
+		("Redo", KEY_REDO),
+		("Reference", KEY_REFERENCE),
+		("Refresh", KEY_REFRESH),
+		("Replace", KEY_REPLACE),
+		("Restart", KEY_RESTART),
+		("Resume", KEY_RESUME),
+		("Save", KEY_SAVE),
+		("Select", KEY_SELECT),
+		("Undo", KEY_UNDO),
+	]);
+}
 
 // Really, I should be wrapping every Ncurses function call elsewhere in the code and adding
 // error-checking to them, too, but I can't bring myself to care enough.  The functions that are
@@ -103,10 +168,6 @@ pub fn read(timeout: i32) -> Key { // Read a UTF-8 char from input
 	};
 	ncurses::timeout(-1);
 	ret
-}
-
-pub fn ncstr(s: &str) -> Vec<i32> {
-	s.chars().map(|c| c as i32).collect()
 }
 
 #[derive(Clone)]
@@ -255,5 +316,81 @@ impl Output {
 			}
 		});
 		Ok(())
+	}
+}
+
+fn keysym(i: &str) -> IResult<&str, i32> {
+	alt((
+		map(
+			preceded( // Backslash escape
+				tag("\\"),
+				anychar,
+			),
+			|x| x as i32,
+		),
+		map( // Control character represented like ^C
+			preceded(
+				tag("^"),
+				one_of("@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_?"),
+			),
+			|c: char| match c {
+				'?' => 0x7f,
+				c => (c as u32 - '@' as u32) as i32,
+			},
+		),
+		map_res( // Keysym name
+			many_m_n(2, 10,
+				one_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"),
+			),
+			|x| {
+				let sym = x.into_iter().collect::<String>();
+				let code = KEYSYMS.get(sym.as_str()).ok_or(anyhow!("Unknown key descriptor {:?}", sym))?;
+				Ok::<i32, Error>(*code)
+			},
+		),
+		map( // Any single character except space or backslash
+			none_of("\\ "),
+			|x| x as i32,
+		)
+	))(i)
+}
+
+pub fn parse_keysyms(s: &str) -> Result<Vec<i32>> {
+	Ok(terminated(separated_list1(space1, keysym), eof)(s).map_err(|e| anyhow!("Couldn't parse keys {:?}: {}", s, e))?.1)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn test_keysym() {
+		let tests = vec![
+			("x", 'x' as i32),
+			("\\\\", '\\' as i32),
+			("^I", '\t' as i32),
+			("^?", 0x7f),
+			("\\ ", ' ' as i32),
+			("^@", 0),
+			("Down", KEY_DOWN),
+			("Next", KEY_NPAGE),
+			("F11", KEY_F11),
+		];
+		for (i, o) in tests {
+			assert_eq!(keysym(i), Ok(("", o)));
+		}
+	}
+
+	#[test]
+	fn test_keysyms() {
+		let tests = vec![
+			("x", vec!['x' as i32]),
+			("x x", vec!['x' as i32, 'x' as i32]),
+			("^L  \t Prior", vec![0x0c, KEY_PPAGE]),
+			("Up Up Down Down  Left Right Left Right  B A  Begin", vec![KEY_UP, KEY_UP, KEY_DOWN, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_LEFT, KEY_RIGHT, 'B' as i32, 'A' as i32, KEY_BEG]),
+		];
+		for (i, o) in tests {
+			assert_eq!(parse_keysyms(i).unwrap(), o);
+		}
 	}
 }

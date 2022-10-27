@@ -4,7 +4,7 @@ version = "0.6.0"
 authors = ["Matthew Schauer <matthew.schauer@e10x.net>"]
 
 [dependencies]
-error-chain = "0.11"
+anyhow = "1.0"
 serde_json = "1.0"
 ncurses = "5.91"
 libc = "0.2"
@@ -13,8 +13,10 @@ unicode-width = "0.1"
 regex = "1"
 libloading = "0.5"
 itertools = "0.8"
-clipboard = "0.5"
+arboard = "2.1"
 owning_ref = "0.4"
-jq-rs = "0.4"
+jq-rs = { git = "https://github.com/onelson/jq-rs" }
 tb-interface = {path = "../tb-interface"}
 textproto = {path = "../../textproto/textproto"}
+lazy_static = "1.4"
+nom = "7.1"

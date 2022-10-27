@@ -26,16 +26,13 @@
 //! good examples of more practical backends.
 
 #[macro_use]
-extern crate error_chain;
+extern crate anyhow;
 extern crate enumflags2;
 #[macro_use]
 extern crate enumflags2_derive;
 
+use anyhow::Result;
 pub use enumflags2::BitFlags;
-
-pub mod errors {
-	error_chain! { }
-}
 
 /// This allows the plugin being used to configure certain aspects of the display tree's behavior.
 pub struct Settings {
@@ -137,7 +134,7 @@ pub trait Source {
 
 	/// Apply to the contained tree a transformation described by the provided string, returning the
 	/// transformed tree as a new source.
-	fn transform(&self, _transformation: &str) -> errors::Result<Box<dyn Source>> { Err(errors::Error::from("This source does not implement transformations")) }
+	fn transform(&self, _transformation: &str) -> Result<Box<dyn Source>> { Err(anyhow!("This source does not implement transformations")) }
 }
 
 /// Basic information about a backend.
@@ -165,7 +162,7 @@ pub trait Factory {
 	/// simply exit normally.  If there is some problem with the input, return `Some(Err)` and TB
 	/// will print an error trace and abort.  Otherwise, return `Some(Ok(Box<Source>))` and TB will
 	/// enter interactive mode.
-	fn from(&self, args: &[&str]) -> Option<errors::Result<Box<dyn Source>>>;
+	fn from(&self, args: &[&str]) -> Option<Result<Box<dyn Source>>>;
 
 	/// Return a list of colors to be used in rendering the tree.  This sets the internal palette
 	/// used by the tree.  A color can then be used by specifying its index in this vector in the

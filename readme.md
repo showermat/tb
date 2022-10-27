@@ -8,7 +8,8 @@ by virtue of running in the terminal.
 
 ## How to Use
 
-The easiest thing is probably to download the precompiled binary from the releases page.  It should be mostly dependency-free.
+The easiest thing is probably to download the precompiled binary from the releases page.  It should be mostly dependency-free
+but does rely on platform ncurses.
 
 If you have the Rust toolchain installed, you can clone this repository and build from scratch:
 
@@ -86,7 +87,6 @@ directory (`$XDG_DATA_HOME/tb/plugins` by default).  For more information about 
   - Future
       - Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend
         regex
-      - jq integration: https://crates.io/crates/json-query
       - Support monochrome mode in curses.rs
   - Ideas
       - ncurses replacement: https://github.com/TimonPost/crossterm https://github.com/redox-os/termion

@@ -1,13 +1,16 @@
 #[macro_use]
-extern crate error_chain;
+extern crate anyhow;
 extern crate serde_json;
 extern crate regex;
 extern crate libloading;
 extern crate itertools;
-extern crate clipboard;
+extern crate arboard;
 extern crate owning_ref;
 extern crate tb_interface as interface;
 extern crate textproto;
+#[macro_use]
+extern crate lazy_static;
+extern crate nom;
 
 mod display;
 mod keybinder;
@@ -17,7 +20,7 @@ mod backends;
 mod format;
 
 use interface::*;
-use interface::errors::*;
+use anyhow::{Context, Error, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use itertools::Itertools;
@@ -71,10 +74,10 @@ impl Backend {
 }
 
 fn load_plugins() -> Result<Vec<Result<(PathBuf, Library)>>> {
-	let dir = std::env::var("XDG_DATA_HOME").or(std::env::var("HOME").map(|home| home + "/.local/share")).chain_err(|| "Couldn't find XDG data home")? + "/" + APPNAME + "/plugins";
-	let entries = std::fs::read_dir(dir.clone()).chain_err(|| format!("{} does not exist", dir))?
+	let dir = std::env::var("XDG_DATA_HOME").or(std::env::var("HOME").map(|home| home + "/.local/share")).with_context(|| "Couldn't find XDG data home")? + "/" + APPNAME + "/plugins";
+	let entries = std::fs::read_dir(dir.clone()).with_context(|| format!("{} does not exist", dir))?
 		.filter_map(|res| res.ok()).filter(|x| x.path().metadata().map(|y| y.is_file()).unwrap_or(false));
-	Ok(entries.map(|entry| libloading::Library::new(&entry.path()).map(|x| (entry.path(), x)).chain_err(|| format!("Failed to open {} as shared library", entry.path().to_string_lossy()))).collect())
+	Ok(entries.map(|entry| libloading::Library::new(&entry.path()).map(|x| (entry.path(), x)).with_context(|| format!("Failed to open {} as shared library", entry.path().to_string_lossy()))).collect())
 }
 
 fn info_exit(backends: HashMap<String, Backend>, errors: Vec<Error>) {
@@ -93,7 +96,7 @@ Available backends:
 	if errors.len() > 0 {
 		println!("\nLoad errors:");
 		for err in errors {
-			let mut chain = err.iter();
+			let mut chain = err.chain();
 			println!("    {}", chain.next().expect("Error is empty chain").to_string());
 			for elem in chain {
 				println!("        Caused by: {}", elem);
@@ -103,7 +106,7 @@ Available backends:
 	std::process::exit(0);
 }
 
-fn run() -> Result<()> {
+fn main() -> Result<()> {
 	let builtin_backends = vec![
 		backends::json::get_factory(),
 		backends::fs::get_factory(),
@@ -112,7 +115,7 @@ fn run() -> Result<()> {
 	];
 	let (plugins, load_errors) = extract_errors(load_plugins().unwrap_or(vec![])); // Do NOT consume `plugins`!  Use `iter`, not `into_iter`.  Otherwise the symbols extracted from it will end up with dangling pointers and you have fun segfault time.
 	let (plugin_backends, factory_errors) = extract_errors(plugins.iter().map(|(path, lib)| unsafe {
-		let func: Result<libloading::Symbol<unsafe extern fn() -> Vec<Box<dyn Factory>>>> = lib.get(b"get_factories").chain_err(|| format!("Couldn't load symbol `get_factories` from shared library {}", path.to_string_lossy()));
+		let func: Result<libloading::Symbol<unsafe extern fn() -> Vec<Box<dyn Factory>>>> = lib.get(b"get_factories").with_context(|| format!("Couldn't load symbol `get_factories` from shared library {}", path.to_string_lossy()));
 		func.map(move |f| f().into_iter().map(move |factory| Backend::fromfile(path.clone(), factory)))
 	}).collect());
 	let backends: HashMap<String, Backend> = itertools::concat(vec![
@@ -121,7 +124,7 @@ fn run() -> Result<()> {
 	]).into_iter().map(|x| (x.factory.info().name.to_string(), x)).collect();
 	let errors = itertools::concat(vec![load_errors, factory_errors]);
 
-	let backend_re = regex::Regex::new("^([a-z]+)b$").chain_err(|| "Invalid regular expression given for backend extraction")?;
+	let backend_re = regex::Regex::new("^([a-z]+)b$").with_context(|| "Invalid regular expression given for backend extraction")?;
 	let args_owned = std::env::args().collect::<Vec<String>>();
 	let args = args_owned.iter().map(|x| x.as_str()).collect::<Vec<&str>>();
 	let (backend, subargs) =
@@ -143,12 +146,12 @@ fn run() -> Result<()> {
 			}
 			else {
 				let backend = backend_re.captures(callname).expect("Backend regex does not match argument 0").get(1)
-					.ok_or("Backend regex does not capture the backend name")?.as_str().to_string();
+					.ok_or(anyhow!("Backend regex does not capture the backend name"))?.as_str().to_string();
 				(backend.to_string(), &args[1..])
 			}
 		};
 
-	let factory = &backends.get(&backend).ok_or(format!("Could not find backend \"{}\"", backend))?.factory;
+	let factory = &backends.get(&backend).ok_or(anyhow!("Could not find backend \"{}\"", backend))?.factory;
 	if let Some(treeres) = factory.from(subargs) {
 		let tree = treeres?;
 		curses::setup()?;
@@ -161,5 +164,3 @@ fn run() -> Result<()> {
 	};
 	Ok(())
 }
-
-quick_main!(run);

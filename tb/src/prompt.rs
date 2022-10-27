@@ -1,7 +1,14 @@
 use ::curses;
 use ::curses::Key;
 use ::curses::Output;
-use ::errors::*;
+use anyhow::Result;
+use nom::IResult;
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::character::complete::*;
+use nom::combinator::*;
+use nom::multi::*;
+use nom::sequence::*;
 
 struct Prompt<'a, T> {
 	t: &'a mut T, // Stored reference for callback
@@ -185,7 +192,7 @@ impl<'a, T> Prompt<'a, T> {
 	}
 
 	fn read(&mut self) -> Result<String> {
-		let init = self.history.last().ok_or("Prompt history is empty")?.clone();
+		let init = self.history.last().ok_or(anyhow!("Prompt history is empty"))?.clone();
 		self.reset(&init)?;
 		loop {
 			match curses::read(-1) {
@@ -253,4 +260,8 @@ pub fn prompt<T>(t: &mut T, location: (usize, usize), width: usize, prompt: &str
 	let ret = Prompt::<T>::new(t, location, width, prompt, init, history, callback, palette)?.read()?;
 	curses::prompt_off()?;
 	Ok(ret)
+}
+
+pub fn tokenize(s: &str) -> Result<Vec<String>> {
+	unimplemented!()
 }

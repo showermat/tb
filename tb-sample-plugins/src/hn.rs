@@ -1,7 +1,7 @@
 use ::tb_interface::*;
 use ::tb_interface::fmt::*;
-use ::errors::*;
 use ::serde_json::Value as V;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 
 #[derive(Clone)]
@@ -22,12 +22,12 @@ pub enum Item {
 impl Item {
 	fn hnjson(arg: &str) -> Result<V> {
 		let url = format!("https://hacker-news.firebaseio.com/v0/{}.json", arg);
-		Ok(serde_json::from_reader(reqwest::get(&url).chain_err(|| format!("Failed to fetch {}", url))?).chain_err(|| format!("Could not interpret contents of {} as JSON", url))?)
+		Ok(serde_json::from_reader(reqwest::get(&url).with_context(|| format!("Failed to fetch {}", url))?).with_context(|| format!("Could not interpret contents of {} as JSON", url))?)
 	}
 
 	fn get(id: usize) -> Result<Self> {
 		fn get_as<T>(v: &V, key: &str) -> Result<T> where for<'de> T: serde::Deserialize<'de> {
-			Ok(serde_json::from_value(v.get(key).chain_err(|| "Could not get item at key")?.clone()).chain_err(|| "Item at key was not of requested type")?)
+			Ok(serde_json::from_value(v.get(key).with_context(|| "Could not get item at key")?.clone()).with_context(|| "Item at key was not of requested type")?)
 		}
 		let raw = Self::hnjson(&format!("item/{}", id))?;
 		let info = PostInfo {
@@ -56,13 +56,13 @@ impl Item {
 		match self {
 			Item::Root => {
 				const MAX: usize = 50;
-				let mut ret: Vec<usize> = serde_json::from_value(Self::hnjson("topstories")?).chain_err(|| "Couldn't get list of top stories")?;
+				let mut ret: Vec<usize> = serde_json::from_value(Self::hnjson("topstories")?).with_context(|| "Couldn't get list of top stories")?;
 				ret.truncate(MAX);
 				Ok(ret)
 			},
 			Item::Story { info, .. } | Item::Comment { info, .. } => {
-				let jsonchildren = Self::hnjson(&format!("item/{}", info.id))?.get("kids").chain_err(|| "Could not get children")?.clone();
-				Ok(serde_json::from_value(jsonchildren).chain_err(|| "Children were not of requested type")?)
+				let jsonchildren = Self::hnjson(&format!("item/{}", info.id))?.get("kids").with_context(|| "Could not get children")?.clone();
+				Ok(serde_json::from_value(jsonchildren).with_context(|| "Children were not of requested type")?)
 			}
 		}
 	}
@@ -139,7 +139,7 @@ impl HnFactory {
 		}
 		else {
 			let id = match args.get(0) {
-				Some(i) => Some(i.parse::<usize>().chain_err(|| "Argument is not an integer")?),
+				Some(i) => Some(i.parse::<usize>().with_context(|| "Argument is not an integer")?),
 				None => None,
 			};
 			Ok(Box::new(HnSource::new(id)?))

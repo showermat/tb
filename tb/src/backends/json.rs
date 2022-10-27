@@ -1,7 +1,7 @@
 use ::interface::*;
 use ::interface::fmt::*;
 use ::serde_json::{from_reader, Value as V};
-use ::errors::*;
+use anyhow::{Context, Result};
 
 const HI_STR: usize = 0;
 const HI_KWD: usize = 1;
@@ -84,7 +84,7 @@ pub struct JsonSource {
 
 impl JsonSource {
 	pub fn read<T: std::io::Read>(input: T) -> Result<Box<dyn Source>> {
-		Ok(Box::new(Self { json: from_reader(input).chain_err(|| "could not parse input as JSON")? }))
+		Ok(Box::new(Self { json: from_reader(input).with_context(|| "could not parse input as JSON")? }))
 	}
 }
 
@@ -94,8 +94,8 @@ impl Source for JsonSource {
 	}
 
 	fn transform(&self, transformation: &str) -> Result<Box<dyn Source>> {
-		let result = jq_rs::run(transformation, &self.json.to_string()).chain_err(|| "JQ filter failed")?;
-		Ok(Box::new(Self { json: serde_json::from_str(&result).chain_err(|| "JQ returned invalid JSON")? }))
+		let result = jq_rs::run(transformation, &self.json.to_string()).map_err(|e| anyhow!("JQ filter failed: {}", e))?;
+		Ok(Box::new(Self { json: serde_json::from_str(&result).with_context(|| "JQ returned invalid JSON")? }))
 	}
 }
 
@@ -119,7 +119,7 @@ Copyright (GPLv3) 2020 Matthew Schauer
 "#);
 				None
 			},
-			Some(fname) => Some(std::fs::File::open(fname).chain_err(|| "could not open file").and_then(|file| JsonSource::read(std::io::BufReader::new(file)))),
+			Some(fname) => Some(std::fs::File::open(fname).with_context(|| "could not open file").and_then(|file| JsonSource::read(std::io::BufReader::new(file)))),
 			None => {
 				let stdin = std::io::stdin();
 				let inlock = stdin.lock();

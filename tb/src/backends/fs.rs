@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{PathBuf, Path};
 use std::ffi::{OsStr, OsString};
 use ::interface::*;
-use ::errors::*;
+use anyhow::{Context, Result};
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Kind {
@@ -133,7 +133,7 @@ impl Factory for FsFactory {
 			None
 		}
 		else {
-			let root = PathBuf::from(args.get(0).cloned().unwrap_or(".")).canonicalize().chain_err(|| "Couldn't read requested path");
+			let root = PathBuf::from(args.get(0).cloned().unwrap_or(".")).canonicalize().with_context(|| "Couldn't read requested path");
 			Some(root.map(|r| Box::new(FsSource { root: r }) as Box<dyn Source>))
 		}
 	}

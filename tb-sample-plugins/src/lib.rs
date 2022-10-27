@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate error_chain;
+extern crate anyhow;
 extern crate tb_interface;
 extern crate rand;
 extern crate rand_distr;

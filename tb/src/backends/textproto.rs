@@ -1,6 +1,6 @@
 use ::interface::*;
 use ::interface::fmt::*;
-use ::errors::*;
+use anyhow::{Context, Result};
 
 use ::textproto::Value as V;
 
@@ -85,8 +85,8 @@ pub struct TextprotoSource {
 impl TextprotoSource {
 	pub fn read<T: std::io::Read>(mut input: T) -> Result<Box<dyn Source>> {
 		let mut buf = String::new();
-		input.read_to_string(&mut buf).chain_err(|| "failed reading input file to string")?;
-		Ok(Box::new(Self { value: textproto::parse(&buf).chain_err(|| "could not parse input as textproto")? }))
+		input.read_to_string(&mut buf).with_context(|| "failed reading input file to string")?;
+		Ok(Box::new(Self { value: textproto::parse(&buf).with_context(|| "could not parse input as textproto")? }))
 	}
 }
 
@@ -116,7 +116,7 @@ Copyright (GPLv3) 2020 Matthew Schauer
 "#);
 				None
 			},
-			Some(fname) => Some(std::fs::File::open(fname).chain_err(|| "could not open file").and_then(|file| TextprotoSource::read(std::io::BufReader::new(file)))),
+			Some(fname) => Some(std::fs::File::open(fname).with_context(|| "could not open file").and_then(|file| TextprotoSource::read(std::io::BufReader::new(file)))),
 			None => {
 				let stdin = std::io::stdin();
 				let inlock = stdin.lock();

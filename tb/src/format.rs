@@ -6,7 +6,7 @@ use std::ops::Bound;
 use ::interface::Render;
 use ::regex::Regex;
 use ::interface::BitFlags;
-use ::errors::*;
+use anyhow::Result;
 
 const TABWIDTH: usize = 4;
 

@@ -2,7 +2,7 @@ use std::process::{Command, Stdio};
 use std::io::{Read, Write};
 use std::sync::Arc;
 use ::interface::*;
-use ::errors::*;
+use anyhow::{Context, Result};
 
 pub struct TxtValue {
 	v: String,
@@ -32,13 +32,13 @@ impl Source for TxtSource {
 		Box::new(TxtSource { buf: Arc::clone(&self.buf), sep: self.sep.clone() })
 	}
 
-	fn transform(&self, transformation: &str) -> errors::Result<Box<dyn Source>> {
+	fn transform(&self, transformation: &str) -> Result<Box<dyn Source>> {
 		if transformation == "" { Ok(Box::new(TxtSource { buf: self.buf.clone(), sep: self.sep.clone() })) }
 		else {
-			let mut proc = Command::new("bash").args(vec!["-c", transformation]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().chain_err(|| "Failed to spawn tranform command")?;
-			let instream = proc.stdin.as_mut().chain_err(|| "Couldn't get input handle to transform command")?;
-			instream.write_all(self.buf.as_bytes()).chain_err(|| "Failed to send input to transform command")?;
-			let output = proc.wait_with_output().chain_err(|| "Couldn't get output from transform command")?;
+			let mut proc = Command::new("bash").args(vec!["-c", transformation]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().with_context(|| "Failed to spawn tranform command")?;
+			let instream = proc.stdin.as_mut().with_context(|| "Couldn't get input handle to transform command")?;
+			instream.write_all(self.buf.as_bytes()).with_context(|| "Failed to send input to transform command")?;
+			let output = proc.wait_with_output().with_context(|| "Couldn't get output from transform command")?;
 			if !output.status.success() { bail!(String::from_utf8_lossy(&output.stderr).to_string()) }
 			Ok(Box::new(TxtSource { buf: Arc::new(String::from_utf8_lossy(&output.stdout).to_string()), sep: self.sep.clone() }))
 		}
@@ -81,7 +81,7 @@ Arguments:
 				sep = s.to_string();
 				None
 			},
-			_ => Some(Some(Err(Error::from("Unrecognized arguments".to_string())))),
+			_ => Some(Some(Err(anyhow!("Unrecognized arguments")))),
 		};
 		match err {
 			Some(e) => e,
@@ -89,7 +89,7 @@ Arguments:
 				let stdin = std::io::stdin();
 				let mut inlock = stdin.lock();
 				let mut buf = vec![];
-				match inlock.read_to_end(&mut buf).chain_err(|| "Couldn't read stdin") {
+				match inlock.read_to_end(&mut buf).with_context(|| "Couldn't read stdin") {
 					Ok(_) => Some(Ok(Box::new(TxtSource { buf: Arc::new(String::from_utf8_lossy(&buf).to_string()), sep: sep }))),
 					Err(e) => Some(Err(e)),
 				}
