@@ -8,25 +8,27 @@ by virtue of running in the terminal.
 
 ## How to Use
 
-The easiest thing is probably to download the precompiled binary from the releases page.  It should be mostly dependency-free
-but does rely on platform ncurses.
+The easiest thing is probably to download the precompiled binary from the releases page.  It depends on ncurses for display and JQ
+for JSON filtering.
 
-If you have the Rust toolchain installed, you can clone this repository and build from scratch:
+If you have the Rust toolchain installed, you can clone this repository and build from scratch.  You will need to set `JQ_LIB_DIR`
+to the location of your JQ installation prior to building.
 
+    export JQ_LIB_DIR=/usr/lib
     git clone https://github.com/showermat/tb
     cd tb
     cargo build --release
 
-I expect people mostly just want to browse JSON.  If that's you, rename the binary to `jb` and stick it somewhere in your `$PATH`.
-Then, run it with your file as the only argument, or pipe in some JSON:
+I expect people mostly want to browse JSON.  If that's you, rename the binary to `jb` and stick it somewhere in your `$PATH`.  Then,
+run it with your file as the only argument, or pipe in some JSON:
 
     mv target/release/tb ~/bin/jb
     chmod +x ~/bin/jb
     echo "[1, 2, 3]" | jb
 
-Key bindings are mostly compatible with Vim:
+Key bindings are inspired by Vim:
 
-  - Right/Left: expand/collaps node
+  - Right/Left: expand/collapse node
   - Space: toggle node
   - `x`: recursively expand node
   - j`/`k`: select next/previous node
@@ -44,6 +46,8 @@ Key bindings are mostly compatible with Vim:
   - `r`: refresh selected node
   - `R`: refresh root node
   - `y`: copy node text
+  - `|`: transform the tree (using JQ for JSON)
+  - `C`: clear the transformation stack
   - `q`: exit program
 
 ## Other Backends
@@ -71,7 +75,7 @@ the first argument, followed by any backend-specific arguments:
 Or, invoke the application as `<backend-name>b`:
 
     mv tb fsb
-    ./fsb /
+    fsb /
 
 In the output above, there's also a backend loaded from a plugin file.  This is just a dynamic library containing an implementation
 of the the tree interfaces.  This is written as a normal Rust library, compiled as a dynamic library, and placed in the plugin
