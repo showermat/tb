@@ -4,7 +4,7 @@
 data.  It's inspired by Firefox's built-in JSON browser and the tree views available in various UI libraries, but it's better
 by virtue of running in the terminal.
 
-![Sample TB session](doc/1.gif)
+![Sample TB session](doc/demo.gif)
 
 ## How to Use
 
@@ -85,13 +85,19 @@ directory (`$XDG_DATA_HOME/tb/plugins` by default).  For more information about 
 ## Road Map
 
   - TODO
-      - In nobreaks: clip lines too long to fit, allow hard wraps (then remove testing nobreak from rand backend)
+      - In nobreaks: clip lines too long to fit rather than panicking, allow hard wraps (then remove testing nobreak from rand
+        backend)
       - Support resizing in prompt
       - Retrieve children in a separate thread and display a "Loading..." node if it takes more than 0.1 seconds
   - Future
       - Configure: colors, key bindings, tab and indentation sizes, whether to search with regex, mouse scroll multiplier, backend
         regex
       - Support monochrome mode in curses.rs
+      - Rate-limit prompt callbacks
+          - https://docs.rs/tokio/0.2.21/tokio/task/index.html
+          - https://users.rust-lang.org/t/how-can-i-terminate-a-tokio-task-even-if-its-not-finished/40641/2
+          - https://docs.rs/futures/0.3.5/futures/future/struct.Abortable.html
+      - When refreshing a node, make a "Loading..." child node until loading finished
   - Ideas
       - ncurses replacement: https://github.com/TimonPost/crossterm https://github.com/redox-os/termion
       - Allow backends to register custom keybindings and config items
