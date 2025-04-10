@@ -17,6 +17,6 @@ arboard = "2.1"
 owning_ref = "0.4"
 jq-rs = { git = "https://github.com/onelson/jq-rs" }
 tb-interface = {path = "../tb-interface"}
-textproto = {path = "../../textproto/textproto"}
+textproto = {path = "../textproto"}
 lazy_static = "1.4"
 nom = "7.1"

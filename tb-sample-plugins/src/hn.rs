@@ -22,7 +22,7 @@ pub enum Item {
 impl Item {
 	fn hnjson(arg: &str) -> Result<V> {
 		let url = format!("https://hacker-news.firebaseio.com/v0/{}.json", arg);
-		Ok(serde_json::from_reader(reqwest::get(&url).with_context(|| format!("Failed to fetch {}", url))?).with_context(|| format!("Could not interpret contents of {} as JSON", url))?)
+		Ok(serde_json::from_reader(reqwest::blocking::get(&url).with_context(|| format!("Failed to fetch {}", url))?).with_context(|| format!("Could not interpret contents of {} as JSON", url))?)
 	}
 
 	fn get(id: usize) -> Result<Self> {
